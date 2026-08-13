@@ -3,12 +3,17 @@
 Subscribes Zenoh keys 'ac/ego_pose' and 'ac/detections_3d' (produced by the Windows
 ac_sim_bridge), decodes the compact binary payloads (see shared/zenoh_payload.h +
 wire.py), and republishes as standard ROS2 messages:
-  ac/ego_pose     -> geometry_msgs/PoseStamped '/ac/ego_pose' + TF (ac_world -> base_link)
+  ac/ego_pose      -> geometry_msgs/PoseStamped '/ac/ego_pose' + TF (ac_world -> base_link)
   ac/detections_3d -> vision_msgs/Detection3DArray '/ac/detections_3d'
+                   + visualization_msgs/MarkerArray '/ac/detections_3d_markers'
+                     (semi-transparent cubes; RViz2 has no built-in Detection3DArray
+                      display, MarkerArray works everywhere)
 
-Note: AC's world frame is likely Y-up while ROS is Z-up. This first version publishes
-in frame 'ac_world' using AC's matrix as-is; if the car/OBBs look tilted in RViz, add a
-static axis transform (documented in README).
+Coordinate frames: AC's world frame is Y-up left-handed (X right, Y up, Z forward);
+ROS is Z-up right-handed (X forward, Y left, Z up). Incoming AC positions/rotations
+are remapped here (_ac_to_ros), so everything is published directly in ROS convention
+under frame 'ac_world' - no static transform needed. With the car axis-aligned in AC
+the result is the identity orientation (car upright, facing +X).
 
 vision_msgs field access auto-detects ROS2 Humble vs Jazzy/Iron+.
 """
@@ -20,6 +25,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from vision_msgs.msg import Detection3DArray, Detection3D, ObjectHypothesisWithPose
+from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import TransformBroadcaster
 import zenoh
 
@@ -27,11 +33,19 @@ from . import wire
 
 FRAME_WORLD = "ac_world"
 FRAME_BASE = "base_link"
+MARKER_NS = "ac_detections"
+MARKER_LIFETIME_NS = 500_000_000  # 0.5s auto-expire
+
+
+def _ac_to_ros(v):
+    """Map an AC-world vector to ROS-world. AC(Z=fwd)->ROS(X), AC(Y=up)->ROS(Z), AC(X=right)->ROS(-Y)."""
+    x, y, z = v
+    return (z, -x, y)
 
 
 def _cols_to_quat(c0, c1, c2):
-    """c0,c1,c2 = world-space directions of the body's local X,Y,Z axes (columns of R).
-    Returns quaternion (x, y, z, w). Standard rotation-matrix -> quaternion."""
+    """c0,c1,c2 = column vectors of a right-handed rotation matrix R (R's columns are
+    the images of the frame's X,Y,Z axes). Returns quaternion (x, y, z, w)."""
     r00, r10, r20 = c0
     r01, r11, r21 = c1
     r02, r12, r22 = c2
@@ -63,6 +77,16 @@ def _cols_to_quat(c0, c1, c2):
     return qx, qy, qz, qw
 
 
+def _ac_rot_to_ros_quat(c0, c1, c2):
+    """AC rotation columns c0,c1,c2 = AC-local X(right)/Y(up)/Z(fwd) in AC world.
+    Convert each to ROS world and re-express as a ROS body frame (X=fwd, Y=left=-right,
+    Z=up) - a proper right-handed rotation."""
+    fwd = _ac_to_ros(c2)
+    left = tuple(-t for t in _ac_to_ros(c0))
+    up = _ac_to_ros(c1)
+    return _cols_to_quat(fwd, left, up)
+
+
 def _payload_bytes(sample) -> bytes:
     p = sample.payload
     return p.to_bytes() if hasattr(p, "to_bytes") else bytes(p)
@@ -80,11 +104,13 @@ class AcRelay(Node):
 
         self.pub_ego = self.create_publisher(PoseStamped, "/ac/ego_pose", 10)
         self.pub_dets = self.create_publisher(Detection3DArray, "/ac/detections_3d", 10)
+        self.pub_markers = self.create_publisher(MarkerArray, "/ac/detections_3d_markers", 10)
         self.tf = TransformBroadcaster(self)
 
         self._sub_ego = self._session.declare_subscriber("ac/ego_pose", self._on_ego)
         self._sub_dets = self._session.declare_subscriber("ac/detections_3d", self._on_dets)
-        self.get_logger().info("ac_relay ready: subscribing ac/ego_pose + ac/detections_3d")
+        self.get_logger().info("ac_relay ready: subscribing ac/ego_pose + ac/detections_3d "
+                               "(AC->ROS axis remap enabled)")
 
     def _stamp(self, header, ts_ns: int) -> None:
         header.stamp.sec = ts_ns // 1_000_000_000
@@ -97,14 +123,15 @@ class AcRelay(Node):
             self.get_logger().warn(f"ego decode failed: {ex}")
             return
         w = e["world"]
-        qx, qy, qz, qw = _cols_to_quat(w[0:3], w[4:7], w[8:11])
+        px, py, pz = _ac_to_ros(w[12:15])
+        qx, qy, qz, qw = _ac_rot_to_ros_quat(w[0:3], w[4:7], w[8:11])
 
         ps = PoseStamped()
         ps.header.frame_id = FRAME_WORLD
         self._stamp(ps.header, e["timestamp_ns"])
-        ps.pose.position.x = w[12]
-        ps.pose.position.y = w[13]
-        ps.pose.position.z = w[14]
+        ps.pose.position.x = px
+        ps.pose.position.y = py
+        ps.pose.position.z = pz
         ps.pose.orientation.x = qx
         ps.pose.orientation.y = qy
         ps.pose.orientation.z = qz
@@ -114,9 +141,9 @@ class AcRelay(Node):
         tf = TransformStamped()
         tf.header = ps.header
         tf.child_frame_id = FRAME_BASE
-        tf.transform.translation.x = w[12]
-        tf.transform.translation.y = w[13]
-        tf.transform.translation.z = w[14]
+        tf.transform.translation.x = px
+        tf.transform.translation.y = py
+        tf.transform.translation.z = pz
         tf.transform.rotation.x = qx
         tf.transform.rotation.y = qy
         tf.transform.rotation.z = qz
@@ -132,20 +159,27 @@ class AcRelay(Node):
         arr = Detection3DArray()
         arr.header.frame_id = FRAME_WORLD
         self._stamp(arr.header, d["timestamp_ns"])
-        for det in d["detections"]:
-            qx, qy, qz, qw = _cols_to_quat(
+
+        markers = MarkerArray()
+        for i, det in enumerate(d["detections"]):
+            px, py, pz = _ac_to_ros(det["world_pos"])
+            qx, qy, qz, qw = _ac_rot_to_ros_quat(
                 det["world_rot"][0:3], det["world_rot"][3:6], det["world_rot"][6:9])
+            # AC half-extents order (X=right, Y=up, Z=fwd) -> ROS (X=fwd, Y=right, Z=up)
+            he = det["half_extents"]
+            sx, sy, sz = 2.0 * he[2], 2.0 * he[0], 2.0 * he[1]  # length / width / height
+
             d3 = Detection3D()
-            d3.bbox.center.position.x = det["world_pos"][0]
-            d3.bbox.center.position.y = det["world_pos"][1]
-            d3.bbox.center.position.z = det["world_pos"][2]
+            d3.bbox.center.position.x = px
+            d3.bbox.center.position.y = py
+            d3.bbox.center.position.z = pz
             d3.bbox.center.orientation.x = qx
             d3.bbox.center.orientation.y = qy
             d3.bbox.center.orientation.z = qz
             d3.bbox.center.orientation.w = qw
-            d3.bbox.size.x = 2.0 * det["half_extents"][0]
-            d3.bbox.size.y = 2.0 * det["half_extents"][1]
-            d3.bbox.size.z = 2.0 * det["half_extents"][2]
+            d3.bbox.size.x = sx
+            d3.bbox.size.y = sy
+            d3.bbox.size.z = sz
             # vision_msgs ObjectHypothesisWithPose differs by ROS2 distro:
             #   Humble -> flat {id, score};  Jazzy/Iron+ -> nested {hypothesis.{class_id,score}}
             hyp = ObjectHypothesisWithPose()
@@ -157,7 +191,32 @@ class AcRelay(Node):
                 hyp.score = float(det["score"])
             d3.results.append(hyp)
             arr.detections.append(d3)
+
+            mk = Marker()
+            mk.header = arr.header
+            mk.ns = MARKER_NS
+            mk.id = i
+            mk.type = Marker.CUBE
+            mk.action = Marker.ADD
+            mk.pose.position.x = px
+            mk.pose.position.y = py
+            mk.pose.position.z = pz
+            mk.pose.orientation.x = qx
+            mk.pose.orientation.y = qy
+            mk.pose.orientation.z = qz
+            mk.pose.orientation.w = qw
+            mk.scale.x = sx
+            mk.scale.y = sy
+            mk.scale.z = sz
+            mk.color.r = 0.2
+            mk.color.g = 0.9
+            mk.color.b = 0.2
+            mk.color.a = 0.35
+            mk.lifetime.nanosec = MARKER_LIFETIME_NS
+            markers.markers.append(mk)
+
         self.pub_dets.publish(arr)
+        self.pub_markers.publish(markers)
 
     def close(self) -> None:
         try:
