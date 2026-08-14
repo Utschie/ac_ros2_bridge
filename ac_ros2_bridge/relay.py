@@ -237,6 +237,25 @@ class AcRelay(Node):
         # eyeball-verifiable against custom_lidars.ini.
         (px, py, pz), (qx, qy, qz, qw) = frames.install_pose_to_ros(
             l["install_pos"], l["install_fwd"])
+
+        # One-shot diagnostic per lidar: name <-> ini install <-> frame pose <->
+        # frame X direction (car fwd in base_link). Compare against the DEPLOYED
+        # custom_lidars.ini to catch stale FORWARD values (fix-10).
+        import math as _m
+        if name not in getattr(self, "_lidar_diag_logged", set()):
+            if not hasattr(self, "_lidar_diag_logged"):
+                self._lidar_diag_logged = set()
+            self._lidar_diag_logged.add(name)
+            fxx = 1.0 - 2.0 * (qy * qy + qz * qz)   # frame X axis from quat
+            fxy = 2.0 * (qx * qy + qz * qw)
+            fxz = 2.0 * (qx * qz - qy * qw)
+            ip, fp, ff = l["install_pos"], l["install_fwd"]
+            self.get_logger().info(
+                "lidarDiag '{}' install=({:.2f},{:.2f},{:.2f}) fwd=({:.1f},{:.1f},{:.1f}) "
+                "framePos=({:.2f},{:.2f},{:.2f}) frameX=({:.2f},{:.2f},{:.2f})".format(
+                    name, ip[0], ip[1], ip[2], ff[0], ff[1], ff[2],
+                    px, py, pz, fxx, fxy, fxz))
+
         tf = TransformStamped()
         tf.header.frame_id = FRAME_BASE
         tf.child_frame_id = frame
