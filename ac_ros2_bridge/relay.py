@@ -26,6 +26,8 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from vision_msgs.msg import Detection3DArray, Detection3D, ObjectHypothesisWithPose
 from visualization_msgs.msg import Marker, MarkerArray
+from sensor_msgs.msg import PointCloud2, PointField
+from std_msgs.msg import Header
 from tf2_ros import TransformBroadcaster
 import zenoh
 
@@ -35,6 +37,16 @@ FRAME_WORLD = "ac_world"
 FRAME_BASE = "base_link"
 MARKER_NS = "ac_detections"
 MARKER_LIFETIME_NS = 500_000_000  # 0.5s auto-expire
+
+
+def _field(name, datatype, offset):
+    from sensor_msgs.msg import PointField as _PF
+    f = _PF()
+    f.name = name
+    f.datatype = datatype
+    f.offset = offset
+    f.count = 1
+    return f
 
 
 def _ac_to_ros(v):
@@ -87,6 +99,12 @@ def _ac_rot_to_ros_quat(c0, c1, c2):
     return _cols_to_quat(fwd, left, up)
 
 
+def _rowmajor9_to_cols(r):
+    """r = 9 floats, ROW-major 3x3 R with world = R @ sensor_local.
+    Returns (col0, col1, col2) - the sensor's local X/Y/Z axes in world."""
+    return ((r[0], r[3], r[6]), (r[1], r[4], r[7]), (r[2], r[5], r[8]))
+
+
 def _payload_bytes(sample) -> bytes:
     p = sample.payload
     return p.to_bytes() if hasattr(p, "to_bytes") else bytes(p)
@@ -105,12 +123,14 @@ class AcRelay(Node):
         self.pub_ego = self.create_publisher(PoseStamped, "/ac/ego_pose", 10)
         self.pub_dets = self.create_publisher(Detection3DArray, "/ac/detections_3d", 10)
         self.pub_markers = self.create_publisher(MarkerArray, "/ac/detections_3d_markers", 10)
+        self._pc_pubs = {}   # lidar name -> PointCloud2 publisher (lazy)
         self.tf = TransformBroadcaster(self)
 
         self._sub_ego = self._session.declare_subscriber("ac/ego_pose", self._on_ego)
         self._sub_dets = self._session.declare_subscriber("ac/detections_3d", self._on_dets)
+        self._sub_lidar = self._session.declare_subscriber("ac/lidar/*/points", self._on_lidar)
         self.get_logger().info("ac_relay ready: subscribing ac/ego_pose + ac/detections_3d "
-                               "(AC->ROS axis remap enabled)")
+                               "+ ac/lidar/*/points (AC->ROS axis remap enabled)")
 
     def _stamp(self, header, ts_ns: int) -> None:
         header.stamp.sec = ts_ns // 1_000_000_000
@@ -217,6 +237,61 @@ class AcRelay(Node):
 
         self.pub_dets.publish(arr)
         self.pub_markers.publish(markers)
+
+    def _on_lidar(self, sample) -> None:
+        try:
+            l = wire.decode_lidar(_payload_bytes(sample))
+        except Exception as ex:  # noqa: BLE001
+            self.get_logger().warn(f"lidar decode failed: {ex}")
+            return
+        name = l["name"] or "lidar0"
+        frame = f"{name}_frame"
+        topic = f"/ac/lidar/{name}/points"
+
+        if name not in self._pc_pubs:
+            self._pc_pubs[name] = self.create_publisher(PointCloud2, topic, 10)
+
+        # Sensor-local hits pass through byte-for-byte: LidarHit layout
+        # (range@0, x@4, y@8, z@12, intensity@16 f32, instance_id@20 u32, LE, 24B)
+        # maps directly onto PointCloud2 fields with point_step=24.
+        fields = [
+            _field("range", PointField.FLOAT32, 0),
+            _field("x", PointField.FLOAT32, 4),
+            _field("y", PointField.FLOAT32, 8),
+            _field("z", PointField.FLOAT32, 12),
+            _field("intensity", PointField.FLOAT32, 16),
+            _field("instance_id", PointField.UINT32, 20),
+        ]
+        pc = PointCloud2()
+        pc.header = Header()
+        pc.header.frame_id = frame
+        self._stamp(pc.header, l["timestamp_ns"])
+        pc.height = 1
+        pc.width = l["point_count"]
+        pc.fields = fields
+        pc.is_bigendian = False
+        pc.point_step = wire.LIDAR_HIT_SIZE
+        pc.row_step = pc.point_step * pc.width
+        pc.is_dense = True
+        pc.data = bytes(l["hits"])   # rclpy accepts bytes
+        self._pc_pubs[name].publish(pc)
+
+        # TF: ac_world -> <name>_frame (sensor pose, AC->ROS remapped)
+        px, py, pz = _ac_to_ros(l["world_pos"])
+        c0, c1, c2 = _rowmajor9_to_cols(l["world_rot"])
+        qx, qy, qz, qw = _ac_rot_to_ros_quat(c0, c1, c2)
+        tf = TransformStamped()
+        tf.header.frame_id = FRAME_WORLD
+        tf.child_frame_id = frame
+        self._stamp(tf.header, l["timestamp_ns"])
+        tf.transform.translation.x = px
+        tf.transform.translation.y = py
+        tf.transform.translation.z = pz
+        tf.transform.rotation.x = qx
+        tf.transform.rotation.y = qy
+        tf.transform.rotation.z = qz
+        tf.transform.rotation.w = qw
+        self.tf.sendTransform(tf)
 
     def close(self) -> None:
         try:

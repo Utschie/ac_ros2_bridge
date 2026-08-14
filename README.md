@@ -106,7 +106,23 @@ relay 内做轴重映射（AC 的 Z前→ROS X前、Y上→ROS Z上、X右→ROS
 跑 `zenohd`（Zenoh 路由器）：Linux 起 `zenohd`（监听 7447）；relay 默认 client 连 `localhost:7447`；
 ac_sim_bridge 的 `ZENOH_CONFIG` 指 `{ connect: { endpoints: ["tcp/LINUX_IP:7447"] } }`。
 
+## 激光雷达（Phase 2）
+
+前置（Windows 侧，除 AC 和 ac_sim_bridge 外）：
+1. 运行 **ac_optix_renderer**（新版本已内置 `AC_LidarCache_v1` 写入器；vis 模式按 **L** 开雷达，
+   headless 模式默认开；按 `custom_lidars.ini` 配置雷达）。
+2. ac_sim_bridge 自动发现该 SHM 并转发（统计行出现 `lidarPts=N`）。
+
+Linux 侧无需改配置：relay 订阅 `ac/lidar/*/points`，发布
+`/ac/lidar/<name>/points`（`sensor_msgs/PointCloud2`，fields: range/x/y/z/intensity/instance_id，
+点在**传感器局部系**）+ TF `ac_world → <name>_frame`（传感器位姿，AC→ROS 已重映射）。
+
+RViz：Add → **PointCloud2**，话题 `/ac/lidar/<name>/points`，Fixed Frame 仍 `ac_world`
+（靠 TF 把传感器系点云挂到世界）。开车 → 点云应贴着地物随车移动。
+
+> 带宽提示：vis 模式每帧全速扫描（4 雷达 ≈ 数百 MB/s）。跨机测试建议 `custom_lidars.ini` 少开雷达，
+> 或 ac_optix_renderer 用 `--real-hz` 按真实 Hz 限频。
+
 ## 后续里程碑（见总体计划）
 - 图像（原始/NVENC H.264）→ `sensor_msgs/Image`/`CompressedImage`。
-- 激光雷达 → `sensor_msgs/PointCloud2`（需 ac_sim_bridge 先接 `AC_LidarCache_v1`）。
 - 控制下行：订阅 ROS2 `/ac/vehicle_cmd` → Zenoh `ac/vehicle_cmd` → Windows 桥写 `AC_ControlCache_v1`。

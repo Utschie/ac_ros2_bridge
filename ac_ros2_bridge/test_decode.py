@@ -51,9 +51,29 @@ def main() -> None:
     assert det0["class_id"] == 1
     assert det0["body_node_ptr"] == 0xAABBCCDD
 
+    # lidar: header sizes must match shared/zenoh_payload.h + shared/lidar_shm.h
+    assert wire.LIDAR_SIZE == 100, f"LIDAR_SIZE {wire.LIDAR_SIZE} != 100"
+    assert wire.LIDAR_HIT_SIZE == 24, f"LIDAR_HIT_SIZE {wire.LIDAR_HIT_SIZE} != 24"
+
+    # lidar round-trip: 2 hits, name, pose
+    name32 = b"front".ljust(32, b"\x00")
+    lhdr = struct.pack("<QQ32sI3f9f", 777, 55, name32, 2,
+                       10.0, 20.0, 30.0,               # worldPos
+                       1, 0, 0, 0, 1, 0, 0, 0, 1)      # worldRot identity (row-major)
+    hit = struct.pack("<5fI", 42.5, 1.0, 2.0, 3.0, 0.9, 7)
+    l = wire.decode_lidar(lhdr + hit + hit)
+    assert l["name"] == "front"
+    assert l["point_count"] == 2
+    assert len(l["hits"]) == 48
+    assert abs(l["world_pos"][0] - 10.0) < 1e-6
+    # first hit x/y/z at byte offsets 4/8/12 (PointCloud2 passthrough layout)
+    hx, hy, hz = struct.unpack_from("<3f", l["hits"], 4)
+    assert abs(hx - 1.0) < 1e-6 and abs(hy - 2.0) < 1e-6 and abs(hz - 3.0) < 1e-6
+
     print(f"decode_check OK: EGO_SIZE={wire.EGO_SIZE} "
           f"DET_HDR_SIZE={wire.DET_HDR_SIZE} DET_SIZE={wire.DET_SIZE} "
-          f"(matches shared/zenoh_payload.h)")
+          f"LIDAR_SIZE={wire.LIDAR_SIZE} LIDAR_HIT_SIZE={wire.LIDAR_HIT_SIZE} "
+          f"(matches shared/zenoh_payload.h + shared/lidar_shm.h)")
 
 
 if __name__ == "__main__":
