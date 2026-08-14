@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# colcon / ament build artifacts (Linux)
+build/
+install/
+log/
