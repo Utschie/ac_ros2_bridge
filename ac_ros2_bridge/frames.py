@@ -1,19 +1,16 @@
 """AC <-> ROS coordinate conversion - THE single place for axis/frame math.
 
-THREE empirically verified anchors (2026-08, in-game tests vs the game view;
-fix-4/6/7 iteration history) - do NOT "fix" signs here without re-testing:
-
-1. TRANSLATIONS / world positions (ego translation, detection worldPos):
-   (x,y,z) -> (z, -x, y)          [detections match the game view: fix-6]
-2. ORIENTATIONS from SHM matrices (ego quat, det quats): built from the
-   body map WITHOUT negation - quat_of(B(fwd), B(x_axis), B(up)),
-   B = (z, x, y)                  [lidar cloud matches the game view: fix-4/7]
-3. BODYTR-local install poses (ini POSITION/FORWARD, +X = physical LEFT):
-   (x,y,z) -> (z, x, y)           [sensor TFs correct since fix-2]
-
-These three anchors coexist by observation; they imply the SHM matrix axis
-triples are stored transposed relative to a naive reading - the anchors are
-the ground truth, not the algebra.
+STATE (fix-8, 2026-08): under measurement. Sign conventions iterated blindly
+in fix-4/6/7 all failed - the SHM matrix storage orientation (transposed or
+not) cannot be settled on paper. relay._on_ego now logs the raw matrix
+triples; with the car parked on a straight, those numbers decide the final
+quat construction. Until then:
+* translations / world positions: (x,y,z) -> (z, -x, y)
+  [detections verified against the game view]
+* BODYTR-local install poses (ini POSITION/FORWARD, +X = physical LEFT):
+  (x,y,z) -> (z, x, y)   [sensor TFs verified since fix-2]
+* quats: fix-6 baseline (world map + negation) - cloud currently MIRRORED,
+  under investigation via the raw-matrix log.
 
 ROS: Z-up RIGHT-handed (X fwd, Y left, Z up).
 
@@ -71,12 +68,13 @@ def quat_from_cols(c0, c1, c2):
 
 
 def ac_axes_to_ros_quat(x_axis, up, fwd):
-    """Axis triples from SHM matrices (x_axis = the m[0:3] image) -> ROS quat.
-    Empirically anchored (fix-4/fix-7, verified via the lidar cloud matching
-    the game view): uses the body map WITHOUT negation. Axis-aligned input
-    yields the identity quat (car upright, facing ROS +X)."""
-    return quat_from_cols(body_vec_to_ros(fwd), body_vec_to_ros(x_axis),
-                          body_vec_to_ros(up))
+    """Axis triples from SHM matrices (x_axis = the m[0:3] triple) -> ROS quat.
+    TEMPORARY baseline (fix-6/fix-8): world map + negation. A 90-deg artifact
+    seen with the fix-7 mix indicates the SHM matrix storage may be transposed
+    relative to this reading - the raw-matrix log added in relay will settle
+    it; do NOT iterate signs blindly."""
+    left_r = tuple(-t for t in ac_vec_to_ros(x_axis))
+    return quat_from_cols(ac_vec_to_ros(fwd), left_r, ac_vec_to_ros(up))
 
 
 def ac_body_pose_to_ros(world16):
@@ -100,8 +98,8 @@ def sensor_axes_to_ros_quat(fwd, y_axis, up):
     """Sensor axes as world-frame triples (from compose_base_to_sensor;
     sensor convention x=fwd, y=left, z=up) -> ROS quat for a
     base_link-><sensor>_frame TF. Same convention as ac_axes_to_ros_quat."""
-    return quat_from_cols(body_vec_to_ros(fwd), body_vec_to_ros(y_axis),
-                          body_vec_to_ros(up))
+    left_r = tuple(-t for t in ac_vec_to_ros(y_axis))
+    return quat_from_cols(ac_vec_to_ros(fwd), left_r, ac_vec_to_ros(up))
 
 
 def install_pose_to_ros(install_pos, install_fwd):

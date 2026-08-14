@@ -89,6 +89,18 @@ class AcRelay(Node):
             return
         w = e["world"]
         self._last_ego_world = list(w)   # cached for base_link->sensor TF composition
+        # Debug: raw BODYTR matrix triples, throttled to ~1 line / 2s.
+        # Park the car straight on a straight and read one line: the triple
+        # that matches the car's heading decides the storage orientation.
+        import time as _time
+        now_t = _time.monotonic()
+        if now_t - getattr(self, "_last_mtx_log", 0.0) > 2.0:
+            self._last_mtx_log = now_t
+            self.get_logger().info(
+                "egoMatrix t=[{:.2f},{:.2f},{:.2f}] r0=[{:.3f},{:.3f},{:.3f}] "
+                "r1=[{:.3f},{:.3f},{:.3f}] r2=[{:.3f},{:.3f},{:.3f}]".format(
+                    w[12], w[13], w[14],
+                    w[0], w[1], w[2], w[4], w[5], w[6], w[8], w[9], w[10]))
         (px, py, pz), (qx, qy, qz, qw) = frames.ac_body_pose_to_ros(w)
 
         ps = PoseStamped()
