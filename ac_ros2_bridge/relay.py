@@ -249,7 +249,7 @@ class AcRelay(Node):
             fxx = 1.0 - 2.0 * (qy * qy + qz * qz)   # frame X axis from quat
             fxy = 2.0 * (qx * qy + qz * qw)
             fxz = 2.0 * (qx * qz - qy * qw)
-            ip, fp, ff = l["install_pos"], l["install_fwd"]
+            ip, ff = l["install_pos"], l["install_fwd"]
             self.get_logger().info(
                 "lidarDiag '{}' install=({:.2f},{:.2f},{:.2f}) fwd=({:.1f},{:.1f},{:.1f}) "
                 "framePos=({:.2f},{:.2f},{:.2f}) frameX=({:.2f},{:.2f},{:.2f})".format(
