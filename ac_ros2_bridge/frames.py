@@ -1,26 +1,29 @@
 """AC <-> ROS coordinate conversion - THE single place for axis/frame math.
 
-FINAL (fix-9, 2026-08, all verified in-game: dets/cloud/cameras/lidars match
-the game view; C++ counterpart: shared/ac_coords.h). Four settled facts:
+FINAL (fix-10, 2026-08; verified in a CANONICAL RViz view - axes red=fwd,
+green=left, blue=up; C++ counterpart: shared/ac_coords.h):
 
-1. BODYTR/body frame: +X = physical LEFT (+Y up, +Z fwd). All ini
-   POSITION/FORWARD values follow this (side sensors: left has x > 0).
-2. Translations / world positions -> ROS:  (x,y,z) -> (z, -x, y)
-   [detections & ego verified against the game view]
+1. AC->ROS is ONE proper map for BOTH world and body data:
+   (x,y,z) -> (z, x, y)   [det=+1]
+   (AC Z fwd->ROS X, AC X left->ROS Y, AC Y up->ROS Z.)
+2. BODYTR/body frame: +X = physical LEFT (+Y up, +Z fwd); ini
+   POSITION/FORWARD follow this (side sensors: left has x > 0).
 3. SHM world-matrix contiguous triples m[0:3]/[4:7]/[8:11] ARE the frame's
-   X/Y/Z axis images (not transposed - settled via the raw egoMatrix log).
-   Orientation quats: quat(map(fwd), -map(x_axis), map(up)) with
-   fwd=m[8:11], x_axis=m[0:3] (physically LEFT).
-4. Lidar point chirality: SHM hits' +y maps to the sensor's physical RIGHT
-   (scan CSV convention) while the frame defines +y=left - ac_sim_bridge
-   negates y at packing time (ac_coords::negateLidarHitY). A data-level
-   mirror cannot be fixed at the TF level (not a proper rotation).
+   X/Y/Z axis images (settled via raw egoMatrix log, fix-8).
+   Orientation quats: quat(B(fwd), B(x_axis), B(up)) with fwd=m[8:11],
+   x_axis=m[0:3] - NO negation anywhere.
+4. Lidar hits need NO chirality flip: optix's buildSensorRot convention
+   matches the install-pose frames axis-for-axis (verified for
+   front/rear/left). Do not negate hit y.
 
-ROS: Z-up RIGHT-handed (X fwd, Y left, Z up).
-
-History note: signs were iterated blindly in fix-4/6/7 and all failed -
-these facts came from a raw-matrix log with the car parked on a straight.
-Do NOT change signs from algebra alone; re-test against the game view.
+ROOT CAUSE NOTE (why fix-6..9 looked right): the world-position map
+(z,-x,y) used between fix-6 and fix-10 is a REFLECTION (det=-1). Paired
+with the proper ego quat it mirrored the car-vs-world arrangement; all
+validations of that era were made through an accidentally mirrored RViz
+camera (viewing from below the ground plane), and mirror x mirror looked
+correct. When the camera was righted, dets appeared left-right swapped
+and lidar clouds mirrored. Always validate with the camera ABOVE the
+plane, axes reading red=fwd/green=left/blue=up.
 
 If anything looks wrong in RViz (mirrored / tilted / swapped), fix it HERE -
 all consumers (ego pose, OBBs, lidar TF, future camera TF) go through these
@@ -31,9 +34,12 @@ import math
 
 
 def ac_vec_to_ros(v):
-    """WORLD-frame vector -> ROS: AC Z(fwd)->ROS X, AC X(right)->-ROS Y, AC Y(up)->ROS Z."""
+    """WORLD-frame vector -> ROS. Same proper map as the body frame:
+    AC Z(fwd)->ROS X, AC X(left)->ROS Y, AC Y(up)->ROS Z (det=+1).
+    The earlier (z,-x,y) variant is a REFLECTION (det=-1): paired with the
+    proper ego quat it silently mirrored the car-vs-world arrangement."""
     x, y, z = v
-    return (z, -x, y)
+    return (z, x, y)
 
 
 def body_vec_to_ros(v):
@@ -76,13 +82,13 @@ def quat_from_cols(c0, c1, c2):
 
 
 def ac_axes_to_ros_quat(x_axis, up, fwd):
-    """Axis triples from SHM matrices (x_axis = the m[0:3] triple) -> ROS quat.
-    TEMPORARY baseline (fix-6/fix-8): world map + negation. A 90-deg artifact
-    seen with the fix-7 mix indicates the SHM matrix storage may be transposed
-    relative to this reading - the raw-matrix log added in relay will settle
-    it; do NOT iterate signs blindly."""
-    left_r = tuple(-t for t in ac_vec_to_ros(x_axis))
-    return quat_from_cols(ac_vec_to_ros(fwd), left_r, ac_vec_to_ros(up))
+    """Axis triples from SHM matrices (x_axis = the m[0:3] triple, physically
+    LEFT) -> ROS quat: quat(B(fwd), B(x_axis), B(up)), proper rotation
+    (det=+1). The earlier negated variant paired with the reflecting world
+    map produced a chirality-consistent-looking but globally mirrored world
+    (all pre-fix-10 validations were made through a mirrored RViz camera)."""
+    return quat_from_cols(ac_vec_to_ros(fwd), ac_vec_to_ros(x_axis),
+                          ac_vec_to_ros(up))
 
 
 def ac_body_pose_to_ros(world16):
@@ -106,8 +112,8 @@ def sensor_axes_to_ros_quat(fwd, y_axis, up):
     """Sensor axes as world-frame triples (from compose_base_to_sensor;
     sensor convention x=fwd, y=left, z=up) -> ROS quat for a
     base_link-><sensor>_frame TF. Same convention as ac_axes_to_ros_quat."""
-    left_r = tuple(-t for t in ac_vec_to_ros(y_axis))
-    return quat_from_cols(ac_vec_to_ros(fwd), left_r, ac_vec_to_ros(up))
+    return quat_from_cols(ac_vec_to_ros(fwd), ac_vec_to_ros(y_axis),
+                          ac_vec_to_ros(up))
 
 
 def install_pose_to_ros(install_pos, install_fwd):
