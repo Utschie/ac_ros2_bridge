@@ -13,12 +13,17 @@ AC 仿真 ↔ ROS2 中继（Linux 端）。订阅 Windows 上 `ac_sim_bridge` �
 
 ## 坐标系（定案，2026-08 实测）
 
-全部转换在 [frames.py](ac_ros2_bridge/frames.py)（`ac_vec_to_ros` 世界平移 / `body_vec_to_ros` 车体系 /
-`ac_axes_to_ros_quat` 朝向 / `install_pose_to_ros` 安装位姿），离线测试
-`test_compose.py` 覆盖。四个定案事实与推导历史见 frames.py docstring 和
-[shared/ac_coords.h](../shared/ac_coords.h)——**改任何符号前必须对照游戏画面重新实测**
-（纯代数推演曾连续失败三轮）。调试：relay 每 2s 打印一行 `egoMatrix`（BODYTR 矩阵原始
-三元组）——直道停车即可用于校验矩阵约定。
+全部转换在 [frames.py](ac_ros2_bridge/frames.py)（`ac_vec_to_ros` = `body_vec_to_ros` =
+唯一保定向映射 `(z,x,y)` / `ac_axes_to_ros_quat` 朝向（无取负）/ `install_pose_to_ros` 安装位姿），
+离线测试 `test_compose.py` 覆盖。四个定案事实与推导历史见 frames.py docstring 和
+[shared/ac_coords.h](../shared/ac_coords.h)。
+
+> **⚠️ 验证纪律**：改任何符号前必须对照**游戏画面**在**正读视角**下重新实测（纯代数推演曾连续
+> 失败三轮；后来又因镜像 RViz 相机连续误验三轮）。**正读视角 = RViz 开 TF 显示，base_link 的轴
+> 红(X)朝前、绿(Y)朝左、蓝(Z)朝上**——先确认 axes 正读，再判断内容左右；axes 不正读时一切
+> 内容判断都不可信（从地面下方看世界整体左右镜像，错误数据会显得正确）。调试：relay 每 2s 打印
+> 一行 `egoMatrix`（BODYTR 矩阵原始三元组）——直道停车即可校验矩阵约定；每雷达首见打一行
+> `lidarDiag`（名字↔安装位姿↔帧落点↔帧朝向）。
 
 ## 依赖（Linux）
 
