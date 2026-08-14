@@ -1,18 +1,19 @@
 """AC <-> ROS coordinate conversion - THE single place for axis/frame math.
 
-TWO empirically verified maps (2026-08, in-game tests) - do not "fix" signs
-here without re-testing against the game view:
+THREE empirically verified anchors (2026-08, in-game tests vs the game view;
+fix-4/6/7 iteration history) - do NOT "fix" signs here without re-testing:
 
-* WORLD-frame data (ego translation, detection world positions, world
-  rotation axes from SHM matrices):  (x,y,z) -> (z, -x, y)
-  Verified: ego upright+moving, dets+cloud match the game view.
-* BODYTR-local data (custom_lidars.ini / custom_cameras.ini POSITION and
-  FORWARD - +X is physically LEFT, verified via side cameras AND lidars):
-  (x,y,z) -> (z, x, y)
+1. TRANSLATIONS / world positions (ego translation, detection worldPos):
+   (x,y,z) -> (z, -x, y)          [detections match the game view: fix-6]
+2. ORIENTATIONS from SHM matrices (ego quat, det quats): built from the
+   body map WITHOUT negation - quat_of(B(fwd), B(x_axis), B(up)),
+   B = (z, x, y)                  [lidar cloud matches the game view: fix-4/7]
+3. BODYTR-local install poses (ini POSITION/FORWARD, +X = physical LEFT):
+   (x,y,z) -> (z, x, y)           [sensor TFs correct since fix-2]
 
-Stored matrices are row-major 4x4 whose contiguous triples m[0:3]/m[4:7]/
-m[8:11] are the frame's X/Y/Z axis images in world (matches the verified
-gamehook_ac camera math and scene_sync's local x parent accumulation).
+These three anchors coexist by observation; they imply the SHM matrix axis
+triples are stored transposed relative to a naive reading - the anchors are
+the ground truth, not the algebra.
 
 ROS: Z-up RIGHT-handed (X fwd, Y left, Z up).
 
@@ -70,12 +71,12 @@ def quat_from_cols(c0, c1, c2):
 
 
 def ac_axes_to_ros_quat(x_axis, up, fwd):
-    """WORLD-frame axis triples (x_axis = the m[0:3] image) -> ROS quat of the
-    same physical orientation. Axis-aligned input yields the identity quat
-    (car upright, facing ROS +X). The negation pairs with the (z,-x,y) map
-    to keep the resulting basis a proper rotation."""
-    left_r = tuple(-t for t in ac_vec_to_ros(x_axis))
-    return quat_from_cols(ac_vec_to_ros(fwd), left_r, ac_vec_to_ros(up))
+    """Axis triples from SHM matrices (x_axis = the m[0:3] image) -> ROS quat.
+    Empirically anchored (fix-4/fix-7, verified via the lidar cloud matching
+    the game view): uses the body map WITHOUT negation. Axis-aligned input
+    yields the identity quat (car upright, facing ROS +X)."""
+    return quat_from_cols(body_vec_to_ros(fwd), body_vec_to_ros(x_axis),
+                          body_vec_to_ros(up))
 
 
 def ac_body_pose_to_ros(world16):
@@ -96,11 +97,11 @@ def ac_pos_rot_to_ros(pos3, rot_cols9):
 
 
 def sensor_axes_to_ros_quat(fwd, y_axis, up):
-    """Sensor axes as WORLD-frame triples (from compose_base_to_sensor;
+    """Sensor axes as world-frame triples (from compose_base_to_sensor;
     sensor convention x=fwd, y=left, z=up) -> ROS quat for a
-    base_link-><sensor>_frame TF. World-map + negation convention."""
-    left_r = tuple(-t for t in ac_vec_to_ros(y_axis))
-    return quat_from_cols(ac_vec_to_ros(fwd), left_r, ac_vec_to_ros(up))
+    base_link-><sensor>_frame TF. Same convention as ac_axes_to_ros_quat."""
+    return quat_from_cols(body_vec_to_ros(fwd), body_vec_to_ros(y_axis),
+                          body_vec_to_ros(up))
 
 
 def install_pose_to_ros(install_pos, install_fwd):
