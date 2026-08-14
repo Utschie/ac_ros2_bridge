@@ -220,14 +220,11 @@ class AcRelay(Node):
         pc.data = bytes(l["hits"])   # rclpy accepts bytes
         self._pc_pubs[name].publish(pc)
 
-        # TF: base_link -> <name>_frame, composed from world poses:
-        # T(base->sensor) = inv(ego_world) . T(world->sensor).
-        if self._last_ego_world is None:
-            return   # no ego pose yet; skip TF until ego arrives
-        t_rel, (s_x, s_y, s_z) = frames.compose_base_to_sensor(
-            self._last_ego_world, l["world_pos"], l["world_rot"])
-        px, py, pz = frames.ac_vec_to_ros(t_rel)
-        qx, qy, qz, qw = frames.sensor_axes_to_ros_quat(s_x, s_y, s_z)
+        # TF: base_link -> <name>_frame, directly from the ini install pose
+        # (POSITION/FORWARD, carried through SHM+bridge). Deterministic and
+        # eyeball-verifiable against custom_lidars.ini.
+        (px, py, pz), (qx, qy, qz, qw) = frames.install_pose_to_ros(
+            l["install_pos"], l["install_fwd"])
         tf = TransformStamped()
         tf.header.frame_id = FRAME_BASE
         tf.child_frame_id = frame

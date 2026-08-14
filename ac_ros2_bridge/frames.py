@@ -87,6 +87,30 @@ def sensor_axes_to_ros_quat(fwd, left, up):
     return ac_axes_to_ros_quat(right, up, fwd)
 
 
+def install_pose_to_ros(install_pos, install_fwd):
+    """custom_lidars.ini install pose (POSITION/FORWARD, BODYTR frame:
+    X right, Y up, Z fwd) -> (ros_position, ros_quat) for a
+    base_link -> <sensor>_frame TF. Sensor up is the body up axis.
+
+    Deterministic and eyeball-verifiable against the ini: front FORWARD=(0,0,1)
+    -> identity quat, rear (0,0,-1) -> 180-deg Z, left (-1,0,0) -> +90 deg,
+    right (1,0,0) -> -90 deg."""
+    import math as _m
+    fx, fy, fz = install_fwd
+    n = _m.sqrt(fx * fx + fy * fy + fz * fz) or 1.0
+    fwd = (fx / n, fy / n, fz / n)
+    up = (0.0, 1.0, 0.0)
+    # body-frame right/left (AC left-handed world: cross(up, fwd) is the true right)
+    right = (
+        up[1] * fwd[2] - up[2] * fwd[1],
+        up[2] * fwd[0] - up[0] * fwd[2],
+        up[0] * fwd[1] - up[1] * fwd[0],
+    )
+    left = tuple(-t for t in right)
+    quat = quat_from_cols(ac_vec_to_ros(fwd), ac_vec_to_ros(left), ac_vec_to_ros(up))
+    return ac_vec_to_ros(install_pos), quat
+
+
 def compose_base_to_sensor(ego_world, world_pos, world_rot9):
     """T(base -> sensor) = inv(E) . S, all in AC coordinates.
 

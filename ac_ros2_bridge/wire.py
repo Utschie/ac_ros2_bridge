@@ -23,9 +23,9 @@ DET_FMT = "<3f3f9fHfQ"
 DET_SIZE = struct.calcsize(DET_FMT)  # 74
 
 # LidarPayload: uint64 timestampNs, uint64 frameId, char name[32], uint32 pointCount,
-#               float worldPos[3], float worldRot[9]  (== 100 bytes)
-LIDAR_FMT = "<QQ32sI3f9f"
-LIDAR_SIZE = struct.calcsize(LIDAR_FMT)  # 100
+#               float installPos[3], installFwd[3], worldPos[3], worldRot[9]  (== 124 bytes)
+LIDAR_FMT = "<QQ32sI18f"
+LIDAR_SIZE = struct.calcsize(LIDAR_FMT)  # 124
 
 # ac_lidar::LidarHit: float range, x, y, z, intensity; uint32 instanceID (== 24 bytes)
 LIDAR_HIT_SIZE = 24
@@ -76,13 +76,16 @@ def decode_lidar(data: bytes) -> dict:
     if len(data) < LIDAR_SIZE:
         raise ValueError(f"lidar payload too short: {len(data)} < {LIDAR_SIZE}")
     ts_ns, frame_id, name_b, count, *rest = struct.unpack(LIDAR_FMT, data[:LIDAR_SIZE])
-    world_pos = rest[0:3]
-    world_rot = rest[3:12]
+    install_pos = rest[0:3]
+    install_fwd = rest[3:6]
+    world_pos = rest[6:9]
+    world_rot = rest[9:18]
     need = LIDAR_SIZE + count * LIDAR_HIT_SIZE
     if len(data) < need:
         raise ValueError(f"lidar hits truncated: have {len(data)}, need {need}")
     hits = data[LIDAR_SIZE:need]
     name = name_b.split(b"\x00", 1)[0].decode("ascii", errors="replace")
     return {"timestamp_ns": ts_ns, "frame_id": frame_id, "name": name,
-            "point_count": count, "world_pos": world_pos, "world_rot": world_rot,
+            "point_count": count, "install_pos": install_pos, "install_fwd": install_fwd,
+            "world_pos": world_pos, "world_rot": world_rot,
             "hits": hits}
