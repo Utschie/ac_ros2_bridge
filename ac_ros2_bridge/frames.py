@@ -1,18 +1,26 @@
 """AC <-> ROS coordinate conversion - THE single place for axis/frame math.
 
-STATE (fix-8, 2026-08): under measurement. Sign conventions iterated blindly
-in fix-4/6/7 all failed - the SHM matrix storage orientation (transposed or
-not) cannot be settled on paper. relay._on_ego now logs the raw matrix
-triples; with the car parked on a straight, those numbers decide the final
-quat construction. Until then:
-* translations / world positions: (x,y,z) -> (z, -x, y)
-  [detections verified against the game view]
-* BODYTR-local install poses (ini POSITION/FORWARD, +X = physical LEFT):
-  (x,y,z) -> (z, x, y)   [sensor TFs verified since fix-2]
-* quats: fix-6 baseline (world map + negation) - cloud currently MIRRORED,
-  under investigation via the raw-matrix log.
+FINAL (fix-9, 2026-08, all verified in-game: dets/cloud/cameras/lidars match
+the game view; C++ counterpart: shared/ac_coords.h). Four settled facts:
+
+1. BODYTR/body frame: +X = physical LEFT (+Y up, +Z fwd). All ini
+   POSITION/FORWARD values follow this (side sensors: left has x > 0).
+2. Translations / world positions -> ROS:  (x,y,z) -> (z, -x, y)
+   [detections & ego verified against the game view]
+3. SHM world-matrix contiguous triples m[0:3]/[4:7]/[8:11] ARE the frame's
+   X/Y/Z axis images (not transposed - settled via the raw egoMatrix log).
+   Orientation quats: quat(map(fwd), -map(x_axis), map(up)) with
+   fwd=m[8:11], x_axis=m[0:3] (physically LEFT).
+4. Lidar point chirality: SHM hits' +y maps to the sensor's physical RIGHT
+   (scan CSV convention) while the frame defines +y=left - ac_sim_bridge
+   negates y at packing time (ac_coords::negateLidarHitY). A data-level
+   mirror cannot be fixed at the TF level (not a proper rotation).
 
 ROS: Z-up RIGHT-handed (X fwd, Y left, Z up).
+
+History note: signs were iterated blindly in fix-4/6/7 and all failed -
+these facts came from a raw-matrix log with the car parked on a straight.
+Do NOT change signs from algebra alone; re-test against the game view.
 
 If anything looks wrong in RViz (mirrored / tilted / swapped), fix it HERE -
 all consumers (ego pose, OBBs, lidar TF, future camera TF) go through these

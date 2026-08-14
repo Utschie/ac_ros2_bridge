@@ -3,10 +3,22 @@
 AC 仿真 ↔ ROS2 中继（Linux 端）。订阅 Windows 上 `ac_sim_bridge` 经 **Zenoh** 发出的数据，
 按 `shared/zenoh_payload.h` 解码，发布标准 ROS2 话题，让你在 **RViz** 里看到车移动 + 周围车 3D OBB。
 
-> 当前状态：**中继 M1 已端到端实测通过**（Humble + peer 直连）——RViz 中车辆与 3D OBB 随开车实时移动。
-> 订阅 `ac/ego_pose` + `ac/detections_3d`，发 `/ac/ego_pose`(`PoseStamped`) + TF(`ac_world→base_link`)
-> + `/ac/detections_3d`(`Detection3DArray`) + `/ac/detections_3d_markers`(`MarkerArray` 保底可视化)。
-> 坐标轴重映射（AC→ROS）已内置。图像/激光雷达/控制等后续里程碑再加。**ROS2 只装在这一侧**。
+> 当前状态：**中继 M1 + 激光雷达全部端到端实测通过**（Humble + peer 直连）——RViz 中车辆、
+> 3D OBB、4 雷达点云均与游戏画面一致。订阅 `ac/ego_pose` + `ac/detections_3d` + `ac/lidar/*/points`，
+> 发 `/ac/ego_pose`(`PoseStamped`) + TF(`ac_world→base_link`) + `/ac/detections_3d`(`Detection3DArray`)
+> + `/ac/detections_3d_markers`(`MarkerArray` 保底) + `/ac/lidar/<name>/points`(`PointCloud2`)
+> + TF(`base_link→<name>_frame`)。**AC→ROS 坐标转换全部集中在 [frames.py](ac_ros2_bridge/frames.py)**
+> （4 个实测定案事实见其 docstring，C++ 侧对应 shared/ac_coords.h）。图像/控制等后续里程碑。
+> **ROS2 只装在这一侧**。
+
+## 坐标系（定案，2026-08 实测）
+
+全部转换在 [frames.py](ac_ros2_bridge/frames.py)（`ac_vec_to_ros` 世界平移 / `body_vec_to_ros` 车体系 /
+`ac_axes_to_ros_quat` 朝向 / `install_pose_to_ros` 安装位姿），离线测试
+`test_compose.py` 覆盖。四个定案事实与推导历史见 frames.py docstring 和
+[shared/ac_coords.h](../shared/ac_coords.h)——**改任何符号前必须对照游戏画面重新实测**
+（纯代数推演曾连续失败三轮）。调试：relay 每 2s 打印一行 `egoMatrix`（BODYTR 矩阵原始
+三元组）——直道停车即可用于校验矩阵约定。
 
 ## 依赖（Linux）
 
@@ -94,12 +106,7 @@ rviz2
 | `ModuleNotFoundError: zenoh` | `pip install zenoh`，并确认装到了跑 ros2 的那个 Python |
 | Detection3DArray 显示类型不存在 | 装 `ros-$ROS_DISTRO-vision-msgs-rviz-plugins`，或改用 MarkerArray |
 
-## 坐标系（已内置转换，无需手动处理）
-
-AC 世界系是 **Y-up 左手系**（实测：开车时 x/z 变、y=海拔不变），ROS 是 Z-up 右手系。
-relay 内做轴重映射（AC 的 Z前→ROS X前、Y上→ROS Z上、X右→ROS -Y），发到 `ac_world` 帧的
-数据**直接就是 ROS 约定**——车直立在网格上、朝向正确，无需静态变换。轴对齐时输出即单位姿态。
-（实测验证：AC 单位矩阵 → 单位四元数；位置 (-710,138,2575)→(2575,710,138)，海拔 y 正确落 ROS Z。）
+（旧小节已并入上方"坐标系（定案）"——转换实现与事实清单以 frames.py 为准。）
 
 ## 备选：路由器模式（多机扩展时用）
 
