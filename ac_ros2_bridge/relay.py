@@ -1,24 +1,24 @@
 """ac_ros2_bridge relay node.
 
-Subscribes Zenoh keys 'ac/ego_pose' and 'ac/detections_3d' (produced by the Windows
-ac_sim_bridge), decodes the compact binary payloads (see shared/zenoh_payload.h +
-wire.py), and republishes as standard ROS2 messages:
-  ac/ego_pose      -> geometry_msgs/PoseStamped '/ac/ego_pose' + TF (ac_world -> base_link)
-  ac/detections_3d -> vision_msgs/Detection3DArray '/ac/detections_3d'
-                   + visualization_msgs/MarkerArray '/ac/detections_3d_markers'
-                     (semi-transparent cubes; RViz2 has no built-in Detection3DArray
-                      display, MarkerArray works everywhere)
+Subscribes Zenoh keys from the Windows ac_sim_bridge, decodes the compact
+binary payloads (wire.py, matches shared/zenoh_payload.h), and republishes as
+standard ROS2 messages. All AC->ROS coordinate math lives in frames.py:
 
-Coordinate frames: AC's world frame is Y-up left-handed (X right, Y up, Z forward);
-ROS is Z-up right-handed (X forward, Y left, Z up). Incoming AC positions/rotations
-are remapped here (_ac_to_ros), so everything is published directly in ROS convention
-under frame 'ac_world' - no static transform needed. With the car axis-aligned in AC
-the result is the identity orientation (car upright, facing +X).
+  ac/ego_pose       -> geometry_msgs/PoseStamped '/ac/ego_pose'
+                       + TF ac_world -> base_link
+  ac/detections_3d  -> vision_msgs/Detection3DArray '/ac/detections_3d'
+                       + visualization_msgs/MarkerArray '/ac/detections_3d_markers'
+                       (RViz2 has no built-in Detection3DArray display)
+  ac/lidar/*/points -> sensor_msgs/PointCloud2 '/ac/lidar/<name>/points'
+                       (points stay in the sensor frame, like a real lidar driver)
+                       + TF base_link -> <name>_frame
+
+TF tree: ac_world -> base_link -> {front,rear,...}_frame. Points/images stay in
+their sensor frames; RViz2 and downstream consumers resolve via the TF chain.
 
 vision_msgs field access auto-detects ROS2 Humble vs Jazzy/Iron+.
 """
 
-import math
 import os
 
 import rclpy
@@ -31,6 +31,7 @@ from std_msgs.msg import Header
 from tf2_ros import TransformBroadcaster
 import zenoh
 
+from . import frames
 from . import wire
 
 FRAME_WORLD = "ac_world"
@@ -40,69 +41,12 @@ MARKER_LIFETIME_NS = 500_000_000  # 0.5s auto-expire
 
 
 def _field(name, datatype, offset):
-    from sensor_msgs.msg import PointField as _PF
-    f = _PF()
+    f = PointField()
     f.name = name
     f.datatype = datatype
     f.offset = offset
     f.count = 1
     return f
-
-
-def _ac_to_ros(v):
-    """Map an AC-world vector to ROS-world. AC(Z=fwd)->ROS(X), AC(Y=up)->ROS(Z), AC(X=right)->ROS(-Y)."""
-    x, y, z = v
-    return (z, -x, y)
-
-
-def _cols_to_quat(c0, c1, c2):
-    """c0,c1,c2 = column vectors of a right-handed rotation matrix R (R's columns are
-    the images of the frame's X,Y,Z axes). Returns quaternion (x, y, z, w)."""
-    r00, r10, r20 = c0
-    r01, r11, r21 = c1
-    r02, r12, r22 = c2
-    trace = r00 + r11 + r22
-    if trace > 0.0:
-        s = math.sqrt(trace + 1.0) * 2.0
-        qw = 0.25 * s
-        qx = (r21 - r12) / s
-        qy = (r02 - r20) / s
-        qz = (r10 - r01) / s
-    elif r00 > r11 and r00 > r22:
-        s = math.sqrt(1.0 + r00 - r11 - r22) * 2.0
-        qw = (r21 - r12) / s
-        qx = 0.25 * s
-        qy = (r01 + r10) / s
-        qz = (r02 + r20) / s
-    elif r11 > r22:
-        s = math.sqrt(1.0 + r11 - r00 - r22) * 2.0
-        qw = (r02 - r20) / s
-        qx = (r01 + r10) / s
-        qy = 0.25 * s
-        qz = (r12 + r21) / s
-    else:
-        s = math.sqrt(1.0 + r22 - r00 - r11) * 2.0
-        qw = (r10 - r01) / s
-        qx = (r02 + r20) / s
-        qy = (r12 + r21) / s
-        qz = 0.25 * s
-    return qx, qy, qz, qw
-
-
-def _ac_rot_to_ros_quat(c0, c1, c2):
-    """AC rotation columns c0,c1,c2 = AC-local X(right)/Y(up)/Z(fwd) in AC world.
-    Convert each to ROS world and re-express as a ROS body frame (X=fwd, Y=left=-right,
-    Z=up) - a proper right-handed rotation."""
-    fwd = _ac_to_ros(c2)
-    left = tuple(-t for t in _ac_to_ros(c0))
-    up = _ac_to_ros(c1)
-    return _cols_to_quat(fwd, left, up)
-
-
-def _rowmajor9_to_cols(r):
-    """r = 9 floats, ROW-major 3x3 R with world = R @ sensor_local.
-    Returns (col0, col1, col2) - the sensor's local X/Y/Z axes in world."""
-    return ((r[0], r[3], r[6]), (r[1], r[4], r[7]), (r[2], r[5], r[8]))
 
 
 def _payload_bytes(sample) -> bytes:
@@ -124,13 +68,14 @@ class AcRelay(Node):
         self.pub_dets = self.create_publisher(Detection3DArray, "/ac/detections_3d", 10)
         self.pub_markers = self.create_publisher(MarkerArray, "/ac/detections_3d_markers", 10)
         self._pc_pubs = {}   # lidar name -> PointCloud2 publisher (lazy)
+        self._last_ego_world = None   # 16-float AC BODYTR world matrix (for TF composition)
         self.tf = TransformBroadcaster(self)
 
         self._sub_ego = self._session.declare_subscriber("ac/ego_pose", self._on_ego)
         self._sub_dets = self._session.declare_subscriber("ac/detections_3d", self._on_dets)
         self._sub_lidar = self._session.declare_subscriber("ac/lidar/*/points", self._on_lidar)
         self.get_logger().info("ac_relay ready: subscribing ac/ego_pose + ac/detections_3d "
-                               "+ ac/lidar/*/points (AC->ROS axis remap enabled)")
+                               "+ ac/lidar/*/points (AC->ROS axis remap in frames.py)")
 
     def _stamp(self, header, ts_ns: int) -> None:
         header.stamp.sec = ts_ns // 1_000_000_000
@@ -143,8 +88,8 @@ class AcRelay(Node):
             self.get_logger().warn(f"ego decode failed: {ex}")
             return
         w = e["world"]
-        px, py, pz = _ac_to_ros(w[12:15])
-        qx, qy, qz, qw = _ac_rot_to_ros_quat(w[0:3], w[4:7], w[8:11])
+        self._last_ego_world = list(w)   # cached for base_link->sensor TF composition
+        (px, py, pz), (qx, qy, qz, qw) = frames.ac_body_pose_to_ros(w)
 
         ps = PoseStamped()
         ps.header.frame_id = FRAME_WORLD
@@ -182,9 +127,8 @@ class AcRelay(Node):
 
         markers = MarkerArray()
         for i, det in enumerate(d["detections"]):
-            px, py, pz = _ac_to_ros(det["world_pos"])
-            qx, qy, qz, qw = _ac_rot_to_ros_quat(
-                det["world_rot"][0:3], det["world_rot"][3:6], det["world_rot"][6:9])
+            (px, py, pz), (qx, qy, qz, qw) = frames.ac_pos_rot_to_ros(
+                det["world_pos"], det["world_rot"])
             # AC half-extents order (X=right, Y=up, Z=fwd) -> ROS (X=fwd, Y=right, Z=up)
             he = det["half_extents"]
             sx, sy, sz = 2.0 * he[2], 2.0 * he[0], 2.0 * he[1]  # length / width / height
@@ -251,9 +195,9 @@ class AcRelay(Node):
         if name not in self._pc_pubs:
             self._pc_pubs[name] = self.create_publisher(PointCloud2, topic, 10)
 
-        # Sensor-local hits pass through byte-for-byte: LidarHit layout
-        # (range@0, x@4, y@8, z@12, intensity@16 f32, instance_id@20 u32, LE, 24B)
-        # maps directly onto PointCloud2 fields with point_step=24.
+        # Hits stay in the sensor-local frame (x fwd, y left, z up - ROS-style axes,
+        # same as a real lidar driver). LidarHit layout: range@0, x@4, y@8, z@12,
+        # intensity@16 f32, instance_id@20 u32, LE, 24B - passed through unchanged.
         fields = [
             _field("range", PointField.FLOAT32, 0),
             _field("x", PointField.FLOAT32, 4),
@@ -276,12 +220,16 @@ class AcRelay(Node):
         pc.data = bytes(l["hits"])   # rclpy accepts bytes
         self._pc_pubs[name].publish(pc)
 
-        # TF: ac_world -> <name>_frame (sensor pose, AC->ROS remapped)
-        px, py, pz = _ac_to_ros(l["world_pos"])
-        c0, c1, c2 = _rowmajor9_to_cols(l["world_rot"])
-        qx, qy, qz, qw = _ac_rot_to_ros_quat(c0, c1, c2)
+        # TF: base_link -> <name>_frame, composed from world poses:
+        # T(base->sensor) = inv(ego_world) . T(world->sensor).
+        if self._last_ego_world is None:
+            return   # no ego pose yet; skip TF until ego arrives
+        t_rel, (s_x, s_y, s_z) = frames.compose_base_to_sensor(
+            self._last_ego_world, l["world_pos"], l["world_rot"])
+        px, py, pz = frames.ac_vec_to_ros(t_rel)
+        qx, qy, qz, qw = frames.sensor_axes_to_ros_quat(s_x, s_y, s_z)
         tf = TransformStamped()
-        tf.header.frame_id = FRAME_WORLD
+        tf.header.frame_id = FRAME_BASE
         tf.child_frame_id = frame
         self._stamp(tf.header, l["timestamp_ns"])
         tf.transform.translation.x = px

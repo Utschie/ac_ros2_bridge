@@ -114,11 +114,16 @@ ac_sim_bridge 的 `ZENOH_CONFIG` 指 `{ connect: { endpoints: ["tcp/LINUX_IP:744
 2. ac_sim_bridge 自动发现该 SHM 并转发（统计行出现 `lidarPts=N`）。
 
 Linux 侧无需改配置：relay 订阅 `ac/lidar/*/points`，发布
-`/ac/lidar/<name>/points`（`sensor_msgs/PointCloud2`，fields: range/x/y/z/intensity/instance_id，
-点在**传感器局部系**）+ TF `ac_world → <name>_frame`（传感器位姿，AC→ROS 已重映射）。
+`/ac/lidar/<name>/points`（`sensor_msgs/PointCloud2`，fields: range/x/y/z/intensity/instance_id）。
+**点保持在传感器局部系**（x前 y左 z上，同真实雷达驱动），frame_id = `<name>_frame`
+（front_frame / rear_frame）。TF 树完整：
+```
+ac_world ─(ego_pose 每帧)→ base_link ─(inv(ego)·S 每扫描)→ front_frame / rear_frame
+```
+RViz2 / 下游经 TF 链自动解析到任意固定帧；`ros2 run tf2_tools view_frames` 可查看。
 
-RViz：Add → **PointCloud2**，话题 `/ac/lidar/<name>/points`，Fixed Frame 仍 `ac_world`
-（靠 TF 把传感器系点云挂到世界）。开车 → 点云应贴着地物随车移动。
+RViz：Add → **PointCloud2**，话题 `/ac/lidar/<name>/points`，Fixed Frame `ac_world`。
+开车 → 点云应贴着地物随车移动（车动、点云与车体相对关系不变）。
 
 > 带宽提示：vis 模式每帧全速扫描（4 雷达 ≈ 数百 MB/s）。跨机测试建议 `custom_lidars.ini` 少开雷达，
 > 或 ac_optix_renderer 用 `--real-hz` 按真实 Hz 限频。
