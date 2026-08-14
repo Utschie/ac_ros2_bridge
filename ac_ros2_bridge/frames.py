@@ -1,11 +1,20 @@
 """AC <-> ROS coordinate conversion - THE single place for axis/frame math.
 
-EMPIRICAL TRUTH (2026-08, verified via cameras AND lidars in-game): the AC
-world/BODYTR frame is Y-up with +X pointing physically LEFT and +Z forward
-(the old "+X = right" comments were wrong). Stored matrices are row-major 4x4
-whose contiguous triples m[0:3]/m[4:7]/m[8:11] are the frame's X/Y/Z axis
-images in world. ROS: Z-up RIGHT-handed (X fwd, Y left, Z up), so
-AC X(left) -> ROS +Y, AC Y(up) -> ROS +Z, AC Z(fwd) -> ROS +X.
+TWO empirically verified maps (2026-08, in-game tests) - do not "fix" signs
+here without re-testing against the game view:
+
+* WORLD-frame data (ego translation, detection world positions, world
+  rotation axes from SHM matrices):  (x,y,z) -> (z, -x, y)
+  Verified: ego upright+moving, dets+cloud match the game view.
+* BODYTR-local data (custom_lidars.ini / custom_cameras.ini POSITION and
+  FORWARD - +X is physically LEFT, verified via side cameras AND lidars):
+  (x,y,z) -> (z, x, y)
+
+Stored matrices are row-major 4x4 whose contiguous triples m[0:3]/m[4:7]/
+m[8:11] are the frame's X/Y/Z axis images in world (matches the verified
+gamehook_ac camera math and scene_sync's local x parent accumulation).
+
+ROS: Z-up RIGHT-handed (X fwd, Y left, Z up).
 
 If anything looks wrong in RViz (mirrored / tilted / swapped), fix it HERE -
 all consumers (ego pose, OBBs, lidar TF, future camera TF) go through these
@@ -16,7 +25,13 @@ import math
 
 
 def ac_vec_to_ros(v):
-    """Map one AC-frame vector to ROS: AC Z(fwd)->ROS X, AC X(left)->ROS Y, AC Y(up)->ROS Z."""
+    """WORLD-frame vector -> ROS: AC Z(fwd)->ROS X, AC X(right)->-ROS Y, AC Y(up)->ROS Z."""
+    x, y, z = v
+    return (z, -x, y)
+
+
+def body_vec_to_ros(v):
+    """BODYTR-local vector (ini POSITION/FORWARD, +X = physical LEFT) -> ROS."""
     x, y, z = v
     return (z, x, y)
 
@@ -55,11 +70,12 @@ def quat_from_cols(c0, c1, c2):
 
 
 def ac_axes_to_ros_quat(x_axis, up, fwd):
-    """AC axes (each an AC-frame triple; x_axis = the m[0:3] axis image,
-    physically LEFT) -> ROS quat of the same physical orientation.
-    Axis-aligned input yields the identity quat (car upright, facing ROS +X)."""
-    return quat_from_cols(ac_vec_to_ros(fwd), ac_vec_to_ros(x_axis),
-                          ac_vec_to_ros(up))
+    """WORLD-frame axis triples (x_axis = the m[0:3] image) -> ROS quat of the
+    same physical orientation. Axis-aligned input yields the identity quat
+    (car upright, facing ROS +X). The negation pairs with the (z,-x,y) map
+    to keep the resulting basis a proper rotation."""
+    left_r = tuple(-t for t in ac_vec_to_ros(x_axis))
+    return quat_from_cols(ac_vec_to_ros(fwd), left_r, ac_vec_to_ros(up))
 
 
 def ac_body_pose_to_ros(world16):
@@ -80,33 +96,35 @@ def ac_pos_rot_to_ros(pos3, rot_cols9):
 
 
 def sensor_axes_to_ros_quat(fwd, y_axis, up):
-    """Sensor-frame axes (each an AC-frame triple; sensor local convention is
-    x=fwd, y=left, z=up) -> ROS quat for a base_link-><sensor>_frame TF."""
-    return quat_from_cols(ac_vec_to_ros(fwd), ac_vec_to_ros(y_axis),
-                          ac_vec_to_ros(up))
+    """Sensor axes as WORLD-frame triples (from compose_base_to_sensor;
+    sensor convention x=fwd, y=left, z=up) -> ROS quat for a
+    base_link-><sensor>_frame TF. World-map + negation convention."""
+    left_r = tuple(-t for t in ac_vec_to_ros(y_axis))
+    return quat_from_cols(ac_vec_to_ros(fwd), left_r, ac_vec_to_ros(up))
 
 
 def install_pose_to_ros(install_pos, install_fwd):
-    """custom_lidars.ini install pose (POSITION/FORWARD, BODYTR frame:
-    X LEFT, Y up, Z fwd - see module docstring) -> (ros_position, ros_quat)
+    """custom_lidars.ini install pose (POSITION/FORWARD, BODYTR-local frame:
+    +X = physical LEFT - see module docstring) -> (ros_position, ros_quat)
     for a base_link -> <sensor>_frame TF. Sensor up is the body up axis.
 
     Deterministic and eyeball-verifiable against the ini: front FORWARD=(0,0,1)
     -> identity quat, rear (0,0,-1) -> 180-deg Z, left (1,0,0) -> +90 deg,
-    right (-1,0,0) -> -90 deg."""
+    right (-1,0,0) -> -90 deg. Uses the BODYTR map, NOT the world map."""
     import math as _m
     fx, fy, fz = install_fwd
     n = _m.sqrt(fx * fx + fy * fy + fz * fz) or 1.0
     fwd = (fx / n, fy / n, fz / n)
     up = (0.0, 1.0, 0.0)
-    # algebraic cross(up, fwd) in the X-left frame IS the sensor's left axis
+    # algebraic cross(up, fwd) in the X-left body frame IS the sensor's left axis
     left = (
         up[1] * fwd[2] - up[2] * fwd[1],
         up[2] * fwd[0] - up[0] * fwd[2],
         up[0] * fwd[1] - up[1] * fwd[0],
     )
-    quat = quat_from_cols(ac_vec_to_ros(fwd), ac_vec_to_ros(left), ac_vec_to_ros(up))
-    return ac_vec_to_ros(install_pos), quat
+    quat = quat_from_cols(body_vec_to_ros(fwd), body_vec_to_ros(left),
+                          body_vec_to_ros(up))
+    return body_vec_to_ros(install_pos), quat
 
 
 def compose_base_to_sensor(ego_world, world_pos, world_rot9):
