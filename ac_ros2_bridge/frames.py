@@ -1,9 +1,11 @@
 """AC <-> ROS coordinate conversion - THE single place for axis/frame math.
 
-AC world frame: Y-up LEFT-handed (X right, Y up, Z forward). Stored matrices are
-row-major 4x4 whose contiguous triples m[0:3]/m[4:7]/m[8:11] are the frame's
-X/Y/Z axes in world (effective transform: world_x = x*m[0]+y*m[4]+z*m[8]+m[12]).
-ROS: Z-up RIGHT-handed (X fwd, Y left, Z up).
+EMPIRICAL TRUTH (2026-08, verified via cameras AND lidars in-game): the AC
+world/BODYTR frame is Y-up with +X pointing physically LEFT and +Z forward
+(the old "+X = right" comments were wrong). Stored matrices are row-major 4x4
+whose contiguous triples m[0:3]/m[4:7]/m[8:11] are the frame's X/Y/Z axis
+images in world. ROS: Z-up RIGHT-handed (X fwd, Y left, Z up), so
+AC X(left) -> ROS +Y, AC Y(up) -> ROS +Z, AC Z(fwd) -> ROS +X.
 
 If anything looks wrong in RViz (mirrored / tilted / swapped), fix it HERE -
 all consumers (ego pose, OBBs, lidar TF, future camera TF) go through these
@@ -14,9 +16,9 @@ import math
 
 
 def ac_vec_to_ros(v):
-    """Map one AC-frame vector to ROS: AC Z(fwd)->ROS X, AC X(right)->-ROS Y, AC Y(up)->ROS Z."""
+    """Map one AC-frame vector to ROS: AC Z(fwd)->ROS X, AC X(left)->ROS Y, AC Y(up)->ROS Z."""
     x, y, z = v
-    return (z, -x, y)
+    return (z, x, y)
 
 
 def quat_from_cols(c0, c1, c2):
@@ -52,14 +54,12 @@ def quat_from_cols(c0, c1, c2):
     return qx, qy, qz, qw
 
 
-def ac_axes_to_ros_quat(right, up, fwd):
-    """BODYTR-style axes (each an AC-frame triple) -> ROS quat of the same
-    physical orientation. Axis-aligned input yields the identity quat
-    (car upright, facing ROS +X). Verified in RViz."""
-    fwd_r = ac_vec_to_ros(fwd)
-    left_r = tuple(-t for t in ac_vec_to_ros(right))
-    up_r = ac_vec_to_ros(up)
-    return quat_from_cols(fwd_r, left_r, up_r)
+def ac_axes_to_ros_quat(x_axis, up, fwd):
+    """AC axes (each an AC-frame triple; x_axis = the m[0:3] axis image,
+    physically LEFT) -> ROS quat of the same physical orientation.
+    Axis-aligned input yields the identity quat (car upright, facing ROS +X)."""
+    return quat_from_cols(ac_vec_to_ros(fwd), ac_vec_to_ros(x_axis),
+                          ac_vec_to_ros(up))
 
 
 def ac_body_pose_to_ros(world16):
@@ -79,34 +79,32 @@ def ac_pos_rot_to_ros(pos3, rot_cols9):
     return pos_r, quat
 
 
-def sensor_axes_to_ros_quat(fwd, left, up):
+def sensor_axes_to_ros_quat(fwd, y_axis, up):
     """Sensor-frame axes (each an AC-frame triple; sensor local convention is
-    x=fwd, y=left, z=up) -> ROS quat for a base_link-><sensor>_frame TF.
-    Wraps the sign juggling so callers never hand-roll it."""
-    right = tuple(-t for t in left)
-    return ac_axes_to_ros_quat(right, up, fwd)
+    x=fwd, y=left, z=up) -> ROS quat for a base_link-><sensor>_frame TF."""
+    return quat_from_cols(ac_vec_to_ros(fwd), ac_vec_to_ros(y_axis),
+                          ac_vec_to_ros(up))
 
 
 def install_pose_to_ros(install_pos, install_fwd):
     """custom_lidars.ini install pose (POSITION/FORWARD, BODYTR frame:
-    X right, Y up, Z fwd) -> (ros_position, ros_quat) for a
-    base_link -> <sensor>_frame TF. Sensor up is the body up axis.
+    X LEFT, Y up, Z fwd - see module docstring) -> (ros_position, ros_quat)
+    for a base_link -> <sensor>_frame TF. Sensor up is the body up axis.
 
     Deterministic and eyeball-verifiable against the ini: front FORWARD=(0,0,1)
-    -> identity quat, rear (0,0,-1) -> 180-deg Z, left (-1,0,0) -> +90 deg,
-    right (1,0,0) -> -90 deg."""
+    -> identity quat, rear (0,0,-1) -> 180-deg Z, left (1,0,0) -> +90 deg,
+    right (-1,0,0) -> -90 deg."""
     import math as _m
     fx, fy, fz = install_fwd
     n = _m.sqrt(fx * fx + fy * fy + fz * fz) or 1.0
     fwd = (fx / n, fy / n, fz / n)
     up = (0.0, 1.0, 0.0)
-    # body-frame right/left (AC left-handed world: cross(up, fwd) is the true right)
-    right = (
+    # algebraic cross(up, fwd) in the X-left frame IS the sensor's left axis
+    left = (
         up[1] * fwd[2] - up[2] * fwd[1],
         up[2] * fwd[0] - up[0] * fwd[2],
         up[0] * fwd[1] - up[1] * fwd[0],
     )
-    left = tuple(-t for t in right)
     quat = quat_from_cols(ac_vec_to_ros(fwd), ac_vec_to_ros(left), ac_vec_to_ros(up))
     return ac_vec_to_ros(install_pos), quat
 
