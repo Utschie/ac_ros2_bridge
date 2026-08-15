@@ -4,11 +4,13 @@ AC 仿真 ↔ ROS2 中继（Linux 端）。订阅 Windows 上 `ac_sim_bridge` �
 按 `shared/zenoh_payload.h` 解码，发布标准 ROS2 话题，让你在 **RViz** 里看到车移动 + 周围车 3D OBB。
 
 > 当前状态：**中继 M1 + 激光雷达全部端到端实测通过**（Humble + peer 直连）——RViz 中车辆、
-> 3D OBB、4 雷达点云均与游戏画面一致。订阅 `ac/ego_pose` + `ac/detections_3d` + `ac/lidar/*/points`，
+> 3D OBB、4 雷达点云均与游戏画面一致；**相机图像（M2）已实现，待端到端联测**（见下方
+> "相机图像"节）。订阅 `ac/ego_pose` + `ac/detections_3d` + `ac/lidar/*/points` + `ac/camera/**`，
 > 发 `/ac/ego_pose`(`PoseStamped`) + TF(`ac_world→base_link`) + `/ac/detections_3d`(`Detection3DArray`)
 > + `/ac/detections_3d_markers`(`MarkerArray` 保底) + `/ac/lidar/<name>/points`(`PointCloud2`)
-> + TF(`base_link→<name>_frame`)。**AC→ROS 坐标转换全部集中在 [frames.py](ac_ros2_bridge/frames.py)**
-> （4 个实测定案事实见其 docstring，C++ 侧对应 shared/ac_coords.h）。图像/控制等后续里程碑。
+> + `/ac/camera/<cam>/<suffix>`(`Image`) + TF(`base_link→<name>_frame`)。
+> **AC→ROS 坐标转换全部集中在 [frames.py](ac_ros2_bridge/frames.py)**
+> （4 个实测定案事实见其 docstring，C++ 侧对应 shared/ac_coords.h）。压缩/控制等后续里程碑。
 > **ROS2 只装在这一侧**。
 
 ## 坐标系（定案，2026-08 实测）
@@ -80,7 +82,7 @@ Linux 防火墙放行 7447（用 ufw 的话）：`sudo ufw allow 7447`。
    cd ~/ac_ws && source install/setup.bash
    ZENOH_CONFIG=~/relay.json5 ros2 run ac_ros2_bridge relay
    ```
-   预期日志：`[INFO] [ac_relay]: ac_relay ready: subscribing ac/ego_pose + ac/detections_3d (AC->ROS axis remap enabled)`。
+   预期日志：`[INFO] [ac_relay]: ac_relay ready: subscribing ac/ego_pose + ac/detections_3d + ac/lidar/*/points + ac/camera/** (AC->ROS axis remap in frames.py)`；收到相机数据后还会打 `image publisher '/ac/camera/<cam>/image_raw' (WxH rgba8)`。
 
 ### 4. 验证（从简到繁，均已实测）
 
@@ -140,6 +142,33 @@ RViz：Add → **PointCloud2**，话题 `/ac/lidar/<name>/points`，Fixed Frame 
 > 带宽提示：vis 模式每帧全速扫描（4 雷达 ≈ 数百 MB/s）。跨机测试建议 `custom_lidars.ini` 少开雷达，
 > 或 ac_optix_renderer 用 `--real-hz` 按真实 Hz 限频。
 
+## 相机图像（M2）
+
+relay 订阅 `ac/camera/**`，把 `ac/camera/<cam>/<suffix>` 原样转成 ROS 话题
+`/ac/camera/<cam>/<suffix>`（`sensor_msgs/Image`，**SensorData QoS**——best_effort、
+大图丢帧优于堆积）。像素字节直通不转 copy（同点云做法），编码映射见 [wire.py](ac_ros2_bridge/wire.py)
+的 `ENCODING_TO_ROS`：RGBA8/BGRA8/32FC1(R32F 深度)/mono8。`image_classes`（语义图）当前载荷
+为 **RGBA8 彩色语义图**（生产端如此，mono8 class-id 为未来项）。`frame_id = <cam>_frame`
+（相机 TF 属后续阶段；Image 显示不查 TF，不影响显示）。
+
+前置（Windows 侧）：AC 带 gamehook_ac + `custom_cameras.ini`，ac_sim_bridge 自动转发
+（控制台出现 `image: publisher 'ac/camera/...'` 与 `img stats` 行；默认 color、10Hz/路、全部相机，
+≈170MB/s @5 路——WiFi 87MB/s 上限，跨机联测请减少相机或降 `AC_BRIDGE_IMAGE_HZ`）。
+
+### 验证
+
+```bash
+ros2 topic list                      # 应有 /ac/camera/front/image_raw 等
+ros2 topic hz /ac/camera/front/image_raw        # ≈10
+ros2 topic echo /ac/camera/front/image_raw --field encoding   # rgba8（或 bgra8）
+ros2 topic echo /ac/camera/front/image_raw --field width --once  # 1365（保比例裁剪）
+```
+
+RViz2：Fixed Frame `ac_world` → Add → **Image** → 话题 `/ac/camera/front/image_raw` → 开车看图。
+**通道序检查**：游戏里红色的车在 Image 显示里也应是红色（若红蓝互换 = BGRA/RGBA 映射错，
+报给 bridge 侧改 encOf）。深度/语义图同法（`image_depth` 显示为 32FC1 灰度浮点，
+RViz2 Image 显示会自动归一化）。
+
 ## 后续里程碑（见总体计划）
-- 图像（原始/NVENC H.264）→ `sensor_msgs/Image`/`CompressedImage`。
+- 图像压缩（NVENC H.264）→ `sensor_msgs/CompressedImage`；CameraInfo/相机 TF。
 - 控制下行：订阅 ROS2 `/ac/vehicle_cmd` → Zenoh `ac/vehicle_cmd` → Windows 桥写 `AC_ControlCache_v1`。

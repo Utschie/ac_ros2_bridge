@@ -3,6 +3,8 @@
 Verifies the Python struct format strings match shared/zenoh_payload.h (pack(1), LE):
   EgoPosePayload      == 80 bytes
   Detection3DPayload  == 12-byte header + 74 bytes/Detection3D
+  LidarPayload        == 124 bytes + 24 bytes/hit
+  ImagePayload        == 32-byte header + dataLen
 Run:  python ac_ros2_bridge/ac_ros2_bridge/test_decode.py
 """
 
@@ -74,9 +76,45 @@ def main() -> None:
     hx, hy, hz = struct.unpack_from("<3f", l["hits"], 4)
     assert abs(hx - 1.0) < 1e-6 and abs(hy - 2.0) < 1e-6 and abs(hz - 3.0) < 1e-6
 
+    # image: header size must match shared/zenoh_payload.h (ImagePayload 32B)
+    assert wire.IMAGE_SIZE == 32, f"IMAGE_SIZE {wire.IMAGE_SIZE} != 32"
+
+    # image round-trip: 4x2 rgba8 pixels (32 bytes) + trailing extra byte is NOT
+    # forwarded (decoder must slice exactly data_len bytes)
+    pixels = bytes(range(4 * 2 * 4))
+    ihdr = struct.pack("<QQIIHHI", 123, 77, 4, 2, 0, 0, len(pixels))
+    im = wire.decode_image(ihdr + pixels + b"\xEE")   # trailing junk must be cut
+    assert im["timestamp_ns"] == 123
+    assert im["frame_id"] == 77
+    assert im["width"] == 4 and im["height"] == 2
+    assert im["encoding"] == 0 and im["mode"] == 0
+    assert im["data_len"] == 32
+    assert im["data"] == pixels
+    assert len(im["data"]) == im["data_len"]          # step = data_len // height = 16
+
+    # depth variant: encoding=2 (R32F) round-trips
+    ihdr_d = struct.pack("<QQIIHHI", 124, 78, 2, 1, 2, 0, 8)
+    imd = wire.decode_image(ihdr_d + b"\x00" * 8)
+    assert imd["encoding"] == 2 and imd["data_len"] == 8
+
+    # truncation branches must raise
+    for bad in (ihdr[:16], ihdr + pixels[:16]):
+        try:
+            wire.decode_image(bad)
+            raise AssertionError("truncated image must raise")
+        except ValueError:
+            pass
+
+    # wire encoding map must cover every raw encoding the bridge sends today
+    assert wire.ENCODING_TO_ROS[0] == "rgba8"
+    assert wire.ENCODING_TO_ROS[1] == "bgra8"
+    assert wire.ENCODING_TO_ROS[2] == "32FC1"
+    assert wire.ENCODING_TO_ROS[3] == "mono8"
+
     print(f"decode_check OK: EGO_SIZE={wire.EGO_SIZE} "
           f"DET_HDR_SIZE={wire.DET_HDR_SIZE} DET_SIZE={wire.DET_SIZE} "
           f"LIDAR_SIZE={wire.LIDAR_SIZE} LIDAR_HIT_SIZE={wire.LIDAR_HIT_SIZE} "
+          f"IMAGE_SIZE={wire.IMAGE_SIZE} "
           f"(matches shared/zenoh_payload.h + shared/lidar_shm.h)")
 
 

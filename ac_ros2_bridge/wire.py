@@ -30,6 +30,21 @@ LIDAR_SIZE = struct.calcsize(LIDAR_FMT)  # 124
 # ac_lidar::LidarHit: float range, x, y, z, intensity; uint32 instanceID (== 24 bytes)
 LIDAR_HIT_SIZE = 24
 
+# ImagePayload: uint64 timestampNs, uint64 frameId, uint32 width, uint32 height,
+#               uint16 encoding (ImageEncoding), uint16 mode (ImageMode),
+#               uint32 dataLen  (== 32 bytes) + trailing uint8 data[dataLen]
+IMAGE_FMT = "<QQIIHHI"
+IMAGE_SIZE = struct.calcsize(IMAGE_FMT)  # 32
+
+# ac_payload::ImageEncoding -> ROS sensor_msgs/Image encoding string.
+# MONO8/H264 reserved on the wire; H264 maps to CompressedImage in a future phase.
+ENCODING_TO_ROS = {
+    0: "rgba8",    # ENC_RGBA8
+    1: "bgra8",    # ENC_BGRA8
+    2: "32FC1",    # ENC_R32F (depth)
+    3: "mono8",    # ENC_MONO8
+}
+
 CLASS_CAR = 1
 
 
@@ -89,3 +104,23 @@ def decode_lidar(data: bytes) -> dict:
             "point_count": count, "install_pos": install_pos, "install_fwd": install_fwd,
             "world_pos": world_pos, "world_rot": world_rot,
             "hits": hits}
+
+
+def decode_image(data: bytes) -> dict:
+    """Decode an ImagePayload (32-byte header + dataLen trailing bytes).
+
+    'data' is returned as the raw pixel slice: the relay passes it straight
+    into sensor_msgs/Image.msg.data (bytes accepted by rclpy) — same passthrough
+    trick as the lidar hits.
+    """
+    if len(data) < IMAGE_SIZE:
+        raise ValueError(f"image payload too short: {len(data)} < {IMAGE_SIZE}")
+    ts_ns, frame_id, width, height, enc, mode, data_len = \
+        struct.unpack(IMAGE_FMT, data[:IMAGE_SIZE])
+    need = IMAGE_SIZE + data_len
+    if len(data) < need:
+        raise ValueError(f"image data truncated: have {len(data)}, need {need}")
+    return {"timestamp_ns": ts_ns, "frame_id": frame_id,
+            "width": width, "height": height,
+            "encoding": enc, "mode": mode, "data_len": data_len,
+            "data": data[IMAGE_SIZE:need]}

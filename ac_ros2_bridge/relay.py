@@ -12,6 +12,9 @@ standard ROS2 messages. All AC->ROS coordinate math lives in frames.py:
   ac/lidar/*/points -> sensor_msgs/PointCloud2 '/ac/lidar/<name>/points'
                        (points stay in the sensor frame, like a real lidar driver)
                        + TF base_link -> <name>_frame
+  ac/camera/<n>/<suffix> -> sensor_msgs/Image '/ac/camera/<n>/<suffix>'
+                       (suffix: image_raw | image_depth | image_classes;
+                       pixel bytes passed through, encoding mapped in wire.py)
 
 TF tree: ac_world -> base_link -> {front,rear,...}_frame. Points/images stay in
 their sensor frames; RViz2 and downstream consumers resolve via the TF chain.
@@ -26,9 +29,10 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from vision_msgs.msg import Detection3DArray, Detection3D, ObjectHypothesisWithPose
 from visualization_msgs.msg import Marker, MarkerArray
-from sensor_msgs.msg import PointCloud2, PointField
+from sensor_msgs.msg import PointCloud2, PointField, Image
 from std_msgs.msg import Header
 from tf2_ros import TransformBroadcaster
+from rclpy.qos import qos_profile_sensor_data
 import zenoh
 
 from . import frames
@@ -68,14 +72,17 @@ class AcRelay(Node):
         self.pub_dets = self.create_publisher(Detection3DArray, "/ac/detections_3d", 10)
         self.pub_markers = self.create_publisher(MarkerArray, "/ac/detections_3d_markers", 10)
         self._pc_pubs = {}   # lidar name -> PointCloud2 publisher (lazy)
+        self._img_pubs = {}  # ROS topic -> Image publisher (lazy)
         self._last_ego_world = None   # 16-float AC BODYTR world matrix (for TF composition)
         self.tf = TransformBroadcaster(self)
 
         self._sub_ego = self._session.declare_subscriber("ac/ego_pose", self._on_ego)
         self._sub_dets = self._session.declare_subscriber("ac/detections_3d", self._on_dets)
         self._sub_lidar = self._session.declare_subscriber("ac/lidar/*/points", self._on_lidar)
+        self._sub_camera = self._session.declare_subscriber("ac/camera/**", self._on_camera)
         self.get_logger().info("ac_relay ready: subscribing ac/ego_pose + ac/detections_3d "
-                               "+ ac/lidar/*/points (AC->ROS axis remap in frames.py)")
+                               "+ ac/lidar/*/points + ac/camera/** "
+                               "(AC->ROS axis remap in frames.py)")
 
     def _stamp(self, header, ts_ns: int) -> None:
         header.stamp.sec = ts_ns // 1_000_000_000
@@ -268,6 +275,63 @@ class AcRelay(Node):
         tf.transform.rotation.z = qz
         tf.transform.rotation.w = qw
         self.tf.sendTransform(tf)
+
+    # ---- camera images (ac/camera/<cam>/<suffix> -> sensor_msgs/Image) ----
+    # Suffixes carried as raw pixel payloads today. camera_info will be relayed
+    # when the bridge starts sending CameraInfoPayload (future phase).
+    _IMAGE_SUFFIXES = ("image_raw", "image_depth", "image_classes")
+    _BYTES_PER_PIXEL = {"rgba8": 4, "bgra8": 4, "32FC1": 4, "mono8": 1}
+
+    def _on_camera(self, sample) -> None:
+        key = str(sample.key_expr)   # ac/camera/<cam>/<suffix>
+        parts = key.split("/")
+        if len(parts) != 4 or parts[0] != "ac" or parts[1] != "camera" or not parts[2]:
+            self.get_logger().warn(f"unexpected camera key '{key}', ignored")
+            return
+        cam, suffix = parts[2], parts[3]
+        if suffix not in self._IMAGE_SUFFIXES:
+            if key not in getattr(self, "_cam_ignored", set()):
+                if not hasattr(self, "_cam_ignored"):
+                    self._cam_ignored = set()
+                self._cam_ignored.add(key)
+                self.get_logger().info(f"camera key '{key}' not relayed yet, ignored")
+            return
+
+        try:
+            img = wire.decode_image(_payload_bytes(sample))
+        except Exception as ex:  # noqa: BLE001
+            self.get_logger().warn(f"image decode failed ({key}): {ex}")
+            return
+        ros_enc = wire.ENCODING_TO_ROS.get(img["encoding"])
+        if ros_enc is None or img["mode"] != 0:
+            # ENC_H264 / MODE_COMPRESSED -> sensor_msgs/CompressedImage, future phase
+            self.get_logger().warn(f"image encoding={img['encoding']} mode={img['mode']} "
+                                   f"not relayed yet ({key})")
+            return
+        expected = img["width"] * img["height"] * self._BYTES_PER_PIXEL[ros_enc]
+        if img["data_len"] != expected:
+            self.get_logger().warn(f"image size mismatch ({key}): data_len={img['data_len']} "
+                                   f"but {img['width']}x{img['height']} {ros_enc} needs {expected}")
+            return
+
+        topic = f"/{key}"
+        if topic not in self._img_pubs:
+            self._img_pubs[topic] = self.create_publisher(
+                Image, topic, qos_profile_sensor_data)
+            self.get_logger().info(f"image publisher '{topic}' "
+                                   f"({img['width']}x{img['height']} {ros_enc})")
+
+        msg = Image()
+        msg.header = Header()
+        msg.header.frame_id = f"{cam}_frame"
+        self._stamp(msg.header, img["timestamp_ns"])
+        msg.height = img["height"]
+        msg.width = img["width"]
+        msg.encoding = ros_enc
+        msg.is_bigendian = 0
+        msg.step = img["data_len"] // img["height"]
+        msg.data = img["data"]   # raw bytes passthrough, same trick as the lidar hits
+        self._img_pubs[topic].publish(msg)
 
     def close(self) -> None:
         try:
