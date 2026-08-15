@@ -114,7 +114,13 @@ class AcRelay(Node):
         # publishes / TF sends through one lock.
         self._pub_lock = threading.Lock()
         self._last_tf_stamp = None    # rclpy Time of newest ac_world->base_link TF
-        self._static_tf_sent = {}     # lidar name -> (translation tuple, rotation tuple)
+        # lidar name -> (pose_sig, TransformStamped). The FULL set is re-sent
+        # in one sendTransform(list) on every change: /tf_static is latched
+        # (TRANSIENT_LOCAL) with depth 1, so a per-lidar send would leave late
+        # joiners (RViz2 started after the relay) with only the LAST transform
+        # latched -- the other lidars' chains break and their clouds pile up
+        # in RViz2's message filter ("queue is full", never displayed).
+        self._static_tf_cache = {}
         # Frame-exact pairing (see module docstring): producer ts of each ego
         # frame -> local stamp of that frame's TF; messages awaiting their ego.
         # Guarded by _pair_lock (short critical sections, never publish inside).
@@ -382,12 +388,11 @@ class AcRelay(Node):
         # TF: base_link -> <name>_frame, directly from the ini install pose
         # (POSITION/FORWARD, carried through SHM+bridge). Deterministic and
         # eyeball-verifiable against custom_lidars.ini. The install pose is
-        # body-fixed, i.e. CONSTANT -> /tf_static (latched), sent on first sight
-        # and re-sent only if it ever changes (AC restart with a new ini).
-        sent = self._static_tf_sent.get(name)
+        # body-fixed, i.e. CONSTANT -> /tf_static (latched), sent on first
+        # sight / change as part of the FULL static set (see _send_static_tfs).
         pose_sig = ((px, py, pz), (qx, qy, qz, qw))
-        if sent != pose_sig:
-            self._static_tf_sent[name] = pose_sig
+        cached = self._static_tf_cache.get(name)
+        if cached is None or cached[0] != pose_sig:
             tf = TransformStamped()
             tf.header.frame_id = FRAME_BASE
             tf.child_frame_id = frame
@@ -399,8 +404,24 @@ class AcRelay(Node):
             tf.transform.rotation.y = qy
             tf.transform.rotation.z = qz
             tf.transform.rotation.w = qw
-            with self._pub_lock:
-                self.tf_static.sendTransform(tf)
+            self._static_tf_cache[name] = (pose_sig, tf)
+            self._send_static_tfs()
+
+    def _send_static_tfs(self) -> None:
+        """Publish the COMPLETE static set in one /tf_static message.
+
+        /tf_static is latched with depth 1: only the last sample is delivered
+        to late-joining subscribers. Sending per-lidar transforms separately
+        left RViz2 (started after the relay) with a single lidar's static TF,
+        silently breaking the other lidars' chains (clouds stuck in the
+        message filter, "queue is full"). One list publish keeps the latched
+        sample always-complete.
+        """
+        all_tfs = [tf for _, tf in self._static_tf_cache.values()]
+        if not all_tfs:
+            return
+        with self._pub_lock:
+            self.tf_static.sendTransform(all_tfs)
 
     def _publish_lidar(self, l, t) -> None:
         """Publish the scan; t = local stamp of this frame's ego TF

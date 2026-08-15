@@ -39,7 +39,10 @@ AC 仿真 ↔ ROS2 中继（Linux 端）。订阅 Windows 上 `ac_sim_bridge` �
 - **依赖 ac_world→base_link 链的消息戳钳制到最新 ego TF 时刻**（`_stamp_clamped`，配对超时的兜底）：
   按消息戳查 TF 时 buffer 必有同刻或更新的变换，与到达顺序无关，机制上杜绝该类失败。
 - **TF 树**：动态仅 `ac_world → base_link`（~50Hz，随 ego）；`base_link → <lidar>_frame` 安装
-  位姿恒定，走 `/tf_static`（latched），首见即发、位姿变化才重发。
+  位姿恒定，走 `/tf_static`（latched）——**每次变更把全部静态变换放进一条消息发送**：
+  `/tf_static` 的 latch depth=1，晚加入的订阅者只拿最后一次样本；分次单发会让后启动的
+  RViz2 丢掉除最后一个外的全部静态 TF，对应雷达点云卡在 message filter 报
+  "queue is full" 永不显示（实测教训）。
 - **发布锁**：zenoh 回调跑在 zenoh 线程而非 rclpy executor 线程，所有 ROS publish/create_publisher/
   TF 发送经同一把 `threading.Lock` 串行化（配对状态另由 `_pair_lock` 保护）。
 - **取舍**：时间轴变为"relay 接收时刻"（帧间间隔=真实+网络抖动，rosbag 录制同此）；严格仿真时间
