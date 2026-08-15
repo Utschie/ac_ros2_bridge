@@ -27,6 +27,21 @@ AC 仿真 ↔ ROS2 中继（Linux 端）。订阅 Windows 上 `ac_sim_bridge` �
 > 一行 `egoMatrix`（BODYTR 矩阵原始三元组）——直道停车即可校验矩阵约定；每雷达首见打一行
 > `lidarDiag`（名字↔安装位姿↔帧落点↔帧朝向）。
 
+## 时间戳与 TF 策略（M3，修复 RViz2 "No Transform" 闪烁）
+
+- **所有出站消息/TF 的 header.stamp 用 relay 本机 ROS 时钟重打**（每回调用一次、消息与 TF 同刻）。
+  生产端的 Windows 墙钟时间戳**不透传**——两机时钟未同步，钟差曾让 RViz2 看到"未来时间戳"
+  的消息、tf2 拒绝外推，表现为包围盒/点云间歇闪烁 "No Transform ..."。
+- **依赖 ac_world→base_link 链的消息戳钳制到最新 ego TF 时刻**（`_stamp_clamped`）：按消息戳查 TF
+  时 buffer 必有同刻或更新的变换，与到达顺序无关，机制上杜绝该类失败。
+- **TF 树**：动态仅 `ac_world → base_link`（~50Hz，随 ego）；`base_link → <lidar>_frame` 安装
+  位姿恒定，走 `/tf_static`（latched），首见即发、位姿变化才重发。
+- **发布锁**：zenoh 回调跑在 zenoh 线程而非 rclpy executor 线程，所有 ROS publish/create_publisher/
+  TF 发送经同一把 `threading.Lock` 串行化。
+- **取舍**：时间轴变为"relay 接收时刻"（帧间间隔=真实+网络抖动，rosbag 录制同此）；严格仿真时间
+  语义留给 `/clock + use_sim_time` 未来阶段（届时只换取时来源，架构不变）。暂停时 marker 0.5s
+  过期属"只显实时数据"的既定行为。
+
 ## 依赖（Linux）
 
 - **ROS2 Humble 或 Jazzy**（两者皆可；中继走 zenoh-python 直连、非 rmw_zenoh，故发行版灵活。含 `rclpy`、`geometry_msgs`、`vision_msgs`、`visualization_msgs`、`tf2_ros`。vision_msgs 字段差异已自动兼容）。
@@ -131,9 +146,9 @@ ac_sim_bridge 的 `ZENOH_CONFIG` 指 `{ connect: { endpoints: ["tcp/LINUX_IP:744
 Linux 侧无需改配置：relay 订阅 `ac/lidar/*/points`，发布
 `/ac/lidar/<name>/points`（`sensor_msgs/PointCloud2`，fields: range/x/y/z/intensity/instance_id）。
 **点保持在传感器局部系**（x前 y左 z上，同真实雷达驱动），frame_id = `<name>_frame`
-（front_frame / rear_frame）。TF 树完整：
+（front_frame / rear_frame）。TF 树完整（M3 起 `<lidar>_frame` 走静态 TF）：
 ```
-ac_world ─(ego_pose 每帧)→ base_link ─(inv(ego)·S 每扫描)→ front_frame / rear_frame
+ac_world ─(ego_pose 每帧, /tf)→ base_link ─(安装位姿恒定, /tf_static)→ front_frame / rear_frame
 ```
 RViz2 / 下游经 TF 链自动解析到任意固定帧；`ros2 run tf2_tools view_frames` 可查看。
 

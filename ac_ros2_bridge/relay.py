@@ -19,10 +19,22 @@ standard ROS2 messages. All AC->ROS coordinate math lives in frames.py:
 TF tree: ac_world -> base_link -> {front,rear,...}_frame. Points/images stay in
 their sensor frames; RViz2 and downstream consumers resolve via the TF chain.
 
+Timestamp policy (fixes RViz2's intermittent "No Transform ..." flicker):
+ALL outbound headers are stamped with the relay's LOCAL ROS clock at receive
+time, in one clock domain. The producer's wall-clock stamps (Windows, from
+ac_sim_bridge) are NOT propagated: the two machines' clocks are not synced, so
+a forward skew made RViz2 see future-stamped messages and tf2 refused to
+extrapolate. Messages that depend on the ac_world->base_link chain are
+additionally clamped to the newest ego-TF time, so a lookup at the message
+stamp always finds a same-or-newer transform regardless of arrival order.
+Sim time (/clock + use_sim_time) is the documented future upgrade; when it
+lands, only the clock source here changes.
+
 vision_msgs field access auto-detects ROS2 Humble vs Jazzy/Iron+.
 """
 
 import os
+import threading
 
 import rclpy
 from rclpy.node import Node
@@ -31,7 +43,7 @@ from vision_msgs.msg import Detection3DArray, Detection3D, ObjectHypothesisWithP
 from visualization_msgs.msg import Marker, MarkerArray
 from sensor_msgs.msg import PointCloud2, PointField, Image
 from std_msgs.msg import Header
-from tf2_ros import TransformBroadcaster
+from tf2_ros import TransformBroadcaster, StaticTransformBroadcaster
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 import zenoh
 
@@ -84,6 +96,13 @@ class AcRelay(Node):
         self._img_pubs = {}  # ROS topic -> Image publisher (lazy)
         self._last_ego_world = None   # 16-float AC BODYTR world matrix (for TF composition)
         self.tf = TransformBroadcaster(self)
+        self.tf_static = StaticTransformBroadcaster(self)
+        # Zenoh callbacks run on zenoh threads, not the rclpy executor thread;
+        # rclpy publish() is not guaranteed thread-safe -> serialize all ROS
+        # publishes / TF sends through one lock.
+        self._pub_lock = threading.Lock()
+        self._last_tf_stamp = None    # rclpy Time of newest ac_world->base_link TF
+        self._static_tf_sent = {}     # lidar name -> (translation tuple, rotation tuple)
 
         self._sub_ego = self._session.declare_subscriber("ac/ego_pose", self._on_ego)
         self._sub_dets = self._session.declare_subscriber("ac/detections_3d", self._on_dets)
@@ -93,9 +112,23 @@ class AcRelay(Node):
                                "+ ac/lidar/*/points + ac/camera/** "
                                "(AC->ROS axis remap in frames.py)")
 
-    def _stamp(self, header, ts_ns: int) -> None:
-        header.stamp.sec = ts_ns // 1_000_000_000
-        header.stamp.nanosec = ts_ns % 1_000_000_000
+    def _now(self):
+        """Relay-local ROS clock (single clock domain for every outbound stamp)."""
+        return self.get_clock().now()
+
+    def _stamp_clamped(self, header) -> None:
+        """Stamp for messages that resolve through the ac_world->base_link chain.
+
+        Clamped to the newest ego-TF time: a consumer looking up TF at this
+        stamp is guaranteed a same-or-newer transform in the buffer, killing
+        both the cross-machine future-stamp failure and the arrival-order race
+        (the two causes of RViz2's intermittent "No Transform" flicker).
+        Before the first ego message this degrades to plain local now.
+        """
+        now = self._now()
+        if self._last_tf_stamp is not None and now > self._last_tf_stamp:
+            now = self._last_tf_stamp
+        header.stamp = now.to_msg()
 
     def _on_ego(self, sample) -> None:
         try:
@@ -119,9 +152,11 @@ class AcRelay(Node):
                     w[0], w[1], w[2], w[4], w[5], w[6], w[8], w[9], w[10]))
         (px, py, pz), (qx, qy, qz, qw) = frames.ac_body_pose_to_ros(w)
 
+        # One local-time sample per callback; the message and its TF share it.
+        t = self._now()
         ps = PoseStamped()
         ps.header.frame_id = FRAME_WORLD
-        self._stamp(ps.header, e["timestamp_ns"])
+        ps.header.stamp = t.to_msg()
         ps.pose.position.x = px
         ps.pose.position.y = py
         ps.pose.position.z = pz
@@ -129,7 +164,6 @@ class AcRelay(Node):
         ps.pose.orientation.y = qy
         ps.pose.orientation.z = qz
         ps.pose.orientation.w = qw
-        self.pub_ego.publish(ps)
 
         tf = TransformStamped()
         tf.header = ps.header
@@ -141,7 +175,13 @@ class AcRelay(Node):
         tf.transform.rotation.y = qy
         tf.transform.rotation.z = qz
         tf.transform.rotation.w = qw
-        self.tf.sendTransform(tf)
+
+        # Update the clamp reference BEFORE publishing so any message arriving
+        # right after this TF clamps to a time we actually have.
+        self._last_tf_stamp = t
+        with self._pub_lock:
+            self.pub_ego.publish(ps)
+            self.tf.sendTransform(tf)
 
     def _on_dets(self, sample) -> None:
         try:
@@ -151,7 +191,7 @@ class AcRelay(Node):
             return
         arr = Detection3DArray()
         arr.header.frame_id = FRAME_WORLD
-        self._stamp(arr.header, d["timestamp_ns"])
+        self._stamp_clamped(arr.header)
 
         markers = MarkerArray()
         for i, det in enumerate(d["detections"]):
@@ -207,8 +247,9 @@ class AcRelay(Node):
             mk.lifetime.nanosec = MARKER_LIFETIME_NS
             markers.markers.append(mk)
 
-        self.pub_dets.publish(arr)
-        self.pub_markers.publish(markers)
+        with self._pub_lock:
+            self.pub_dets.publish(arr)
+            self.pub_markers.publish(markers)
 
     def _on_lidar(self, sample) -> None:
         try:
@@ -221,7 +262,8 @@ class AcRelay(Node):
         topic = f"/ac/lidar/{name}/points"
 
         if name not in self._pc_pubs:
-            self._pc_pubs[name] = self.create_publisher(PointCloud2, topic, 10)
+            with self._pub_lock:
+                self._pc_pubs[name] = self.create_publisher(PointCloud2, topic, 10)
 
         # Hits stay in the sensor-local frame (x fwd, y left, z up - ROS-style axes,
         # same as a real lidar driver). LidarHit layout: range@0, x@4, y@8, z@12,
@@ -237,7 +279,7 @@ class AcRelay(Node):
         pc = PointCloud2()
         pc.header = Header()
         pc.header.frame_id = frame
-        self._stamp(pc.header, l["timestamp_ns"])
+        self._stamp_clamped(pc.header)
         pc.height = 1
         pc.width = l["point_count"]
         pc.fields = fields
@@ -246,11 +288,9 @@ class AcRelay(Node):
         pc.row_step = pc.point_step * pc.width
         pc.is_dense = True
         pc.data = bytes(l["hits"])   # rclpy accepts bytes
-        self._pc_pubs[name].publish(pc)
+        with self._pub_lock:
+            self._pc_pubs[name].publish(pc)
 
-        # TF: base_link -> <name>_frame, directly from the ini install pose
-        # (POSITION/FORWARD, carried through SHM+bridge). Deterministic and
-        # eyeball-verifiable against custom_lidars.ini.
         (px, py, pz), (qx, qy, qz, qw) = frames.install_pose_to_ros(
             l["install_pos"], l["install_fwd"])
 
@@ -272,18 +312,28 @@ class AcRelay(Node):
                     name, ip[0], ip[1], ip[2], ff[0], ff[1], ff[2],
                     px, py, pz, fxx, fxy, fxz))
 
-        tf = TransformStamped()
-        tf.header.frame_id = FRAME_BASE
-        tf.child_frame_id = frame
-        self._stamp(tf.header, l["timestamp_ns"])
-        tf.transform.translation.x = px
-        tf.transform.translation.y = py
-        tf.transform.translation.z = pz
-        tf.transform.rotation.x = qx
-        tf.transform.rotation.y = qy
-        tf.transform.rotation.z = qz
-        tf.transform.rotation.w = qw
-        self.tf.sendTransform(tf)
+        # TF: base_link -> <name>_frame, directly from the ini install pose
+        # (POSITION/FORWARD, carried through SHM+bridge). Deterministic and
+        # eyeball-verifiable against custom_lidars.ini. The install pose is
+        # body-fixed, i.e. CONSTANT -> /tf_static (latched), sent on first sight
+        # and re-sent only if it ever changes (AC restart with a new ini).
+        sent = self._static_tf_sent.get(name)
+        pose_sig = ((px, py, pz), (qx, qy, qz, qw))
+        if sent != pose_sig:
+            self._static_tf_sent[name] = pose_sig
+            tf = TransformStamped()
+            tf.header.frame_id = FRAME_BASE
+            tf.child_frame_id = frame
+            tf.header.stamp = self._now().to_msg()
+            tf.transform.translation.x = px
+            tf.transform.translation.y = py
+            tf.transform.translation.z = pz
+            tf.transform.rotation.x = qx
+            tf.transform.rotation.y = qy
+            tf.transform.rotation.z = qz
+            tf.transform.rotation.w = qw
+            with self._pub_lock:
+                self.tf_static.sendTransform(tf)
 
     # ---- camera images (ac/camera/<cam>/<suffix> -> sensor_msgs/Image) ----
     # Suffixes carried as raw pixel payloads today. camera_info will be relayed
@@ -325,22 +375,24 @@ class AcRelay(Node):
 
         topic = f"/{key}"
         if topic not in self._img_pubs:
-            self._img_pubs[topic] = self.create_publisher(
-                Image, topic, IMAGE_QOS)
+            with self._pub_lock:
+                self._img_pubs[topic] = self.create_publisher(
+                    Image, topic, IMAGE_QOS)
             self.get_logger().info(f"image publisher '{topic}' "
                                    f"({img['width']}x{img['height']} {ros_enc})")
 
         msg = Image()
         msg.header = Header()
         msg.header.frame_id = f"{cam}_frame"
-        self._stamp(msg.header, img["timestamp_ns"])
+        self._stamp_clamped(msg.header)
         msg.height = img["height"]
         msg.width = img["width"]
         msg.encoding = ros_enc
         msg.is_bigendian = 0
         msg.step = img["data_len"] // img["height"]
         msg.data = img["data"]   # raw bytes passthrough, same trick as the lidar hits
-        self._img_pubs[topic].publish(msg)
+        with self._pub_lock:
+            self._img_pubs[topic].publish(msg)
 
     def close(self) -> None:
         try:
