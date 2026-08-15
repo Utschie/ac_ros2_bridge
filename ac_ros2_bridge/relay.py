@@ -27,6 +27,14 @@ a forward skew made RViz2 see future-stamped messages and tf2 refused to
 extrapolate. Messages that depend on the ac_world->base_link chain are
 additionally clamped to the newest ego-TF time, so a lookup at the message
 stamp always finds a same-or-newer transform regardless of arrival order.
+FRAME-EXACT PAIRING: the bridge stamps ego/dets/lidar of the SAME simulation
+frame with one shared producer timestamp; the relay joins on it and stamps
+dets/lidar with the local time of that exact frame's ego TF. Without this,
+zenoh callback reordering could bind a box/cloud to the previous frame's pose
+(box darts ahead of base_link's axes while moving). Messages whose ego hasn't
+arrived yet are held briefly (<= PAIR_TIMEOUT_S) and fall back to the clamped
+stamp on timeout. Images are not paired (their grab timestamp never matches
+an ego stamp, and image display resolves no TF chain).
 Sim time (/clock + use_sim_time) is the documented future upgrade; when it
 lands, only the clock source here changes.
 
@@ -35,6 +43,8 @@ vision_msgs field access auto-detects ROS2 Humble vs Jazzy/Iron+.
 
 import os
 import threading
+import time
+from collections import deque
 
 import rclpy
 from rclpy.node import Node
@@ -54,6 +64,8 @@ FRAME_WORLD = "ac_world"
 FRAME_BASE = "base_link"
 MARKER_NS = "ac_detections"
 MARKER_LIFETIME_NS = 500_000_000  # 0.5s auto-expire
+PAIR_TIMEOUT_S = 0.5   # max wait for the same-frame ego before clamped fallback
+EGO_MAP_CAP = 512      # pairing map size (~10s @ 50Hz)
 
 # Image publishers must be RELIABLE: RViz2's Image display subscribes RELIABLE
 # by default, and Pub BEST_EFFORT + Sub RELIABLE is the one incompatible QoS
@@ -103,6 +115,14 @@ class AcRelay(Node):
         self._pub_lock = threading.Lock()
         self._last_tf_stamp = None    # rclpy Time of newest ac_world->base_link TF
         self._static_tf_sent = {}     # lidar name -> (translation tuple, rotation tuple)
+        # Frame-exact pairing (see module docstring): producer ts of each ego
+        # frame -> local stamp of that frame's TF; messages awaiting their ego.
+        # Guarded by _pair_lock (short critical sections, never publish inside).
+        self._pair_lock = threading.Lock()
+        self._ego_stamp_by_pts = {}   # producer ts_ns -> rclpy Time
+        self._ego_pts_order = deque()
+        self._pending_msgs = []       # (pts, enqueue_monotonic, publish_fn)
+        self._pair_timer = self.create_timer(0.1, self._flush_pending)
 
         self._sub_ego = self._session.declare_subscriber("ac/ego_pose", self._on_ego)
         self._sub_dets = self._session.declare_subscriber("ac/detections_3d", self._on_dets)
@@ -129,6 +149,56 @@ class AcRelay(Node):
         if self._last_tf_stamp is not None and now > self._last_tf_stamp:
             now = self._last_tf_stamp
         header.stamp = now.to_msg()
+
+    # ---- frame-exact pairing (dets/lidar <-> same-frame ego TF) ----
+
+    def _publish_paired(self, pts: int, publish_fn) -> None:
+        """Publish now with the same-frame ego stamp if known, else defer.
+
+        The bridge stamps ego/dets/lidar of one simulation frame with one
+        shared producer timestamp, so an exact dict join recovers the local
+        stamp of THAT frame's TF even when zenoh delivers the two callbacks
+        out of order (the cause of boxes darting ahead of base_link's axes).
+        """
+        with self._pair_lock:
+            t = self._ego_stamp_by_pts.get(pts)
+            if t is not None:
+                deferred = False
+            else:
+                self._pending_msgs.append((pts, time.monotonic(), publish_fn))
+                deferred = True
+        if not deferred:
+            publish_fn(t)
+
+    def _collect_due(self):
+        """Remove and return [(publish_fn, t_or_None)] whose ego arrived (t) or
+        that timed out (None -> publish_fn falls back to the clamped stamp)."""
+        now_mono = time.monotonic()
+        due = []
+        with self._pair_lock:
+            remain = []
+            for pts, enq, fn in self._pending_msgs:
+                t = self._ego_stamp_by_pts.get(pts)
+                if t is not None or (now_mono - enq) >= PAIR_TIMEOUT_S:
+                    due.append((fn, t))
+                else:
+                    remain.append((pts, enq, fn))
+            self._pending_msgs = remain
+        return due
+
+    def _publish_due(self, due) -> None:
+        for fn, t in due:
+            try:
+                fn(t)
+            except Exception as ex:  # noqa: BLE001
+                self.get_logger().warn(f"paired publish failed: {ex}")
+
+    def _flush_pending(self) -> None:
+        """Timer hook (executor thread): publish matched / timed-out messages."""
+        try:
+            self._publish_due(self._collect_due())
+        except Exception as ex:  # noqa: BLE001
+            self.get_logger().warn(f"flush_pending failed: {ex}")
 
     def _on_ego(self, sample) -> None:
         try:
@@ -183,15 +253,34 @@ class AcRelay(Node):
             self.pub_ego.publish(ps)
             self.tf.sendTransform(tf)
 
+        # Frame-exact pairing: record this frame's local stamp, then release
+        # any dets/lidar that were deferred waiting for exactly this frame.
+        with self._pair_lock:
+            self._ego_stamp_by_pts[e["timestamp_ns"]] = t
+            self._ego_pts_order.append(e["timestamp_ns"])
+            if len(self._ego_pts_order) > EGO_MAP_CAP:
+                self._ego_stamp_by_pts.pop(self._ego_pts_order.popleft(), None)
+        self._publish_due(self._collect_due())
+
     def _on_dets(self, sample) -> None:
         try:
             d = wire.decode_detections(_payload_bytes(sample))
         except Exception as ex:  # noqa: BLE001
             self.get_logger().warn(f"detections decode failed: {ex}")
             return
+        # Stamp with the SAME frame's ego TF (bridge shares one producer ts
+        # across ego/dets per simulation frame); defer if it hasn't landed.
+        self._publish_paired(
+            d["timestamp_ns"], lambda t, _d=d: self._publish_dets(_d, t))
+
+    def _publish_dets(self, d, t) -> None:
+        """t = local stamp of this frame's ego TF (None -> clamped fallback)."""
         arr = Detection3DArray()
         arr.header.frame_id = FRAME_WORLD
-        self._stamp_clamped(arr.header)
+        if t is not None:
+            arr.header.stamp = t.to_msg()
+        else:
+            self._stamp_clamped(arr.header)
 
         markers = MarkerArray()
         for i, det in enumerate(d["detections"]):
@@ -257,40 +346,18 @@ class AcRelay(Node):
         except Exception as ex:  # noqa: BLE001
             self.get_logger().warn(f"lidar decode failed: {ex}")
             return
+        # The bridge forwards a scan inside the iteration that noticed it and
+        # stamps it with that iteration's shared ts -> pairing attaches the
+        # cloud to that frame's ego TF (best available frame alignment).
+        self._publish_paired(
+            l["timestamp_ns"], lambda t, _l=l: self._publish_lidar(_l, t))
+
         name = l["name"] or "lidar0"
         frame = f"{name}_frame"
-        topic = f"/ac/lidar/{name}/points"
 
-        if name not in self._pc_pubs:
-            with self._pub_lock:
-                self._pc_pubs[name] = self.create_publisher(PointCloud2, topic, 10)
-
-        # Hits stay in the sensor-local frame (x fwd, y left, z up - ROS-style axes,
-        # same as a real lidar driver). LidarHit layout: range@0, x@4, y@8, z@12,
-        # intensity@16 f32, instance_id@20 u32, LE, 24B - passed through unchanged.
-        fields = [
-            _field("range", PointField.FLOAT32, 0),
-            _field("x", PointField.FLOAT32, 4),
-            _field("y", PointField.FLOAT32, 8),
-            _field("z", PointField.FLOAT32, 12),
-            _field("intensity", PointField.FLOAT32, 16),
-            _field("instance_id", PointField.UINT32, 20),
-        ]
-        pc = PointCloud2()
-        pc.header = Header()
-        pc.header.frame_id = frame
-        self._stamp_clamped(pc.header)
-        pc.height = 1
-        pc.width = l["point_count"]
-        pc.fields = fields
-        pc.is_bigendian = False
-        pc.point_step = wire.LIDAR_HIT_SIZE
-        pc.row_step = pc.point_step * pc.width
-        pc.is_dense = True
-        pc.data = bytes(l["hits"])   # rclpy accepts bytes
-        with self._pub_lock:
-            self._pc_pubs[name].publish(pc)
-
+        # Install pose from the ini (POSITION/FORWARD via SHM). The one-shot
+        # diagnostic and the static TF below don't depend on the dynamic chain;
+        # run them here (not deferred with the cloud).
         (px, py, pz), (qx, qy, qz, qw) = frames.install_pose_to_ros(
             l["install_pos"], l["install_fwd"])
 
@@ -334,6 +401,46 @@ class AcRelay(Node):
             tf.transform.rotation.w = qw
             with self._pub_lock:
                 self.tf_static.sendTransform(tf)
+
+    def _publish_lidar(self, l, t) -> None:
+        """Publish the scan; t = local stamp of this frame's ego TF
+        (None -> clamped fallback)."""
+        name = l["name"] or "lidar0"
+        frame = f"{name}_frame"
+        topic = f"/ac/lidar/{name}/points"
+
+        if name not in self._pc_pubs:
+            with self._pub_lock:
+                self._pc_pubs[name] = self.create_publisher(PointCloud2, topic, 10)
+
+        # Hits stay in the sensor-local frame (x fwd, y left, z up - ROS-style axes,
+        # same as a real lidar driver). LidarHit layout: range@0, x@4, y@8, z@12,
+        # intensity@16 f32, instance_id@20 u32, LE, 24B - passed through unchanged.
+        fields = [
+            _field("range", PointField.FLOAT32, 0),
+            _field("x", PointField.FLOAT32, 4),
+            _field("y", PointField.FLOAT32, 8),
+            _field("z", PointField.FLOAT32, 12),
+            _field("intensity", PointField.FLOAT32, 16),
+            _field("instance_id", PointField.UINT32, 20),
+        ]
+        pc = PointCloud2()
+        pc.header = Header()
+        pc.header.frame_id = frame
+        if t is not None:
+            pc.header.stamp = t.to_msg()
+        else:
+            self._stamp_clamped(pc.header)
+        pc.height = 1
+        pc.width = l["point_count"]
+        pc.fields = fields
+        pc.is_bigendian = False
+        pc.point_step = wire.LIDAR_HIT_SIZE
+        pc.row_step = pc.point_step * pc.width
+        pc.is_dense = True
+        pc.data = bytes(l["hits"])   # rclpy accepts bytes
+        with self._pub_lock:
+            self._pc_pubs[name].publish(pc)
 
     # ---- camera images (ac/camera/<cam>/<suffix> -> sensor_msgs/Image) ----
     # Suffixes carried as raw pixel payloads today. camera_info will be relayed
@@ -395,6 +502,10 @@ class AcRelay(Node):
             self._img_pubs[topic].publish(msg)
 
     def close(self) -> None:
+        try:
+            self._pair_timer.cancel()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             self._session.close()
         except Exception:  # noqa: BLE001

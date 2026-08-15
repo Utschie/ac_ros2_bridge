@@ -32,15 +32,22 @@ AC 仿真 ↔ ROS2 中继（Linux 端）。订阅 Windows 上 `ac_sim_bridge` �
 - **所有出站消息/TF 的 header.stamp 用 relay 本机 ROS 时钟重打**（每回调用一次、消息与 TF 同刻）。
   生产端的 Windows 墙钟时间戳**不透传**——两机时钟未同步，钟差曾让 RViz2 看到"未来时间戳"
   的消息、tf2 拒绝外推，表现为包围盒/点云间歇闪烁 "No Transform ..."。
-- **依赖 ac_world→base_link 链的消息戳钳制到最新 ego TF 时刻**（`_stamp_clamped`）：按消息戳查 TF
-  时 buffer 必有同刻或更新的变换，与到达顺序无关，机制上杜绝该类失败。
+- **帧精确配对**：bridge 对同一仿真帧的 ego/dets/lidar 共用一个生产端时间戳；relay 按它 join，
+  给 dets/点云打**同帧** ego TF 的本地时刻（`_publish_paired`）。否则 zenoh 回调乱序时钳制会取到
+  上一帧位姿 → 车动时包围盒相对 base_link 轴"向前窜"。配对未命中先挂起（≤0.5s），同帧 ego 到达
+  即发，超时回退钳制戳。**图像不参与配对**（grab 时刻戳与 ego 无 join，且 Image 显示不查 TF）。
+- **依赖 ac_world→base_link 链的消息戳钳制到最新 ego TF 时刻**（`_stamp_clamped`，配对超时的兜底）：
+  按消息戳查 TF 时 buffer 必有同刻或更新的变换，与到达顺序无关，机制上杜绝该类失败。
 - **TF 树**：动态仅 `ac_world → base_link`（~50Hz，随 ego）；`base_link → <lidar>_frame` 安装
   位姿恒定，走 `/tf_static`（latched），首见即发、位姿变化才重发。
 - **发布锁**：zenoh 回调跑在 zenoh 线程而非 rclpy executor 线程，所有 ROS publish/create_publisher/
-  TF 发送经同一把 `threading.Lock` 串行化。
+  TF 发送经同一把 `threading.Lock` 串行化（配对状态另由 `_pair_lock` 保护）。
 - **取舍**：时间轴变为"relay 接收时刻"（帧间间隔=真实+网络抖动，rosbag 录制同此）；严格仿真时间
   语义留给 `/clock + use_sim_time` 未来阶段（届时只换取时来源，架构不变）。暂停时 marker 0.5s
   过期属"只显实时数据"的既定行为。
+- **帧对齐现状**：ego↔dets 严格同帧（同一场景快照+同一时间戳）；ego↔lidar ≈1–2 帧（optix 的
+  scanFrameId 是自身计数器非场景帧号，线上无游戏帧号可 join——严格对齐待未来统一帧号源）；
+  图像独立采样（frameId 与场景计数器不同源）。
 
 ## 依赖（Linux）
 
