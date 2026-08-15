@@ -32,7 +32,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from sensor_msgs.msg import PointCloud2, PointField, Image
 from std_msgs.msg import Header
 from tf2_ros import TransformBroadcaster
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 import zenoh
 
 from . import frames
@@ -42,6 +42,15 @@ FRAME_WORLD = "ac_world"
 FRAME_BASE = "base_link"
 MARKER_NS = "ac_detections"
 MARKER_LIFETIME_NS = 500_000_000  # 0.5s auto-expire
+
+# Image publishers must be RELIABLE: RViz2's Image display subscribes RELIABLE
+# by default, and Pub BEST_EFFORT + Sub RELIABLE is the one incompatible QoS
+# combination (DDS refuses to match -> "offering incompatible QoS" and no data).
+# Cross-machine loss is handled by the Windows bridge (zenoh DROP congestion
+# control); relay->RViz2 is a localhost hop, so RELIABLE costs nothing here.
+IMAGE_QOS = QoSProfile(history=HistoryPolicy.KEEP_LAST,
+                       depth=5,
+                       reliability=ReliabilityPolicy.RELIABLE)
 
 
 def _field(name, datatype, offset):
@@ -317,7 +326,7 @@ class AcRelay(Node):
         topic = f"/{key}"
         if topic not in self._img_pubs:
             self._img_pubs[topic] = self.create_publisher(
-                Image, topic, qos_profile_sensor_data)
+                Image, topic, IMAGE_QOS)
             self.get_logger().info(f"image publisher '{topic}' "
                                    f"({img['width']}x{img['height']} {ros_enc})")
 

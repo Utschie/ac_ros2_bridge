@@ -112,6 +112,7 @@ rviz2
 | RViz 无 Marker | 确认加的是 **MarkerArray** 显示类型、话题 `/ac/detections_3d_markers` |
 | `ModuleNotFoundError: zenoh` | `pip install zenoh`，并确认装到了跑 ros2 的那个 Python |
 | Detection3DArray 显示类型不存在 | 装 `ros-$ROS_DISTRO-vision-msgs-rviz-plugins`，或改用 MarkerArray |
+| RViz 报 `offering incompatible QoS ... RELIABILITY_QOS_POLICY` 无图 | 订阅器要 RELIABLE 但发布器是 BEST_EFFORT（唯一不兼容组合）。relay 的图像发布器已是 RELIABLE——若仍报，检查是否跑的旧代码；或临时把 RViz2 显示的 Reliability 改 Best Effort |
 
 （旧小节已并入上方"坐标系（定案）"——转换实现与事实清单以 frames.py 为准。）
 
@@ -145,8 +146,10 @@ RViz：Add → **PointCloud2**，话题 `/ac/lidar/<name>/points`，Fixed Frame 
 ## 相机图像（M2）
 
 relay 订阅 `ac/camera/**`，把 `ac/camera/<cam>/<suffix>` 原样转成 ROS 话题
-`/ac/camera/<cam>/<suffix>`（`sensor_msgs/Image`，**SensorData QoS**——best_effort、
-大图丢帧优于堆积）。像素字节直通不转 copy（同点云做法），编码映射见 [wire.py](ac_ros2_bridge/wire.py)
+`/ac/camera/<cam>/<suffix>`（`sensor_msgs/Image`，**Reliable QoS（depth 5）**——RViz2 的
+Image 显示默认 RELIABLE 订阅，发布器用 BEST_EFFORT 会被 DDS 拒绝配对；跨机丢帧由 Windows 端
+zenoh DROP 拥塞控制兜底，relay→RViz2 是本地回环、RELIABLE 无代价）。像素字节直通不转 copy
+（同点云做法），编码映射见 [wire.py](ac_ros2_bridge/wire.py)
 的 `ENCODING_TO_ROS`：RGBA8/BGRA8/32FC1(R32F 深度)/mono8。`image_classes`（语义图）当前载荷
 为 **RGBA8 彩色语义图**（生产端如此，mono8 class-id 为未来项）。`frame_id = <cam>_frame`
 （相机 TF 属后续阶段；Image 显示不查 TF，不影响显示）。
