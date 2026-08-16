@@ -14,6 +14,8 @@ Future: MODE_COMPRESSED / ENC_H264 -> sensor_msgs/CompressedImage branch
 ac_sim_bridge's IFrameEncoder).
 """
 
+import numpy as np
+
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import Header
@@ -91,6 +93,8 @@ class CameraRelay:
         msg.encoding = ros_enc
         msg.is_bigendian = 0
         msg.step = img["data_len"] // img["height"]
-        msg.data = img["data"]   # raw bytes passthrough, same trick as the lidar hits
+        # numpy (not bytes): the generated uint8[] setter per-element Python
+        # check over bytes costs ~seconds for a 4MB frame (see scene_relay).
+        msg.data = np.frombuffer(img["data"], dtype=np.uint8)
         with self.ctx.pub_lock:
             self._img_pubs[topic].publish(msg)

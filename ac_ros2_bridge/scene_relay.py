@@ -17,6 +17,8 @@ Cross-cutting policies (clock, pairing, locks, TF) come from RelayContext.
 
 import time
 
+import numpy as np
+
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from vision_msgs.msg import Detection3DArray, Detection3D, ObjectHypothesisWithPose
 from visualization_msgs.msg import Marker, MarkerArray
@@ -293,6 +295,11 @@ class SceneRelay:
         pc.point_step = wire.LIDAR_HIT_SIZE
         pc.row_step = pc.point_step * pc.width
         pc.is_dense = True
-        pc.data = bytes(l["hits"])   # rclpy accepts bytes
+        # MUST be a numpy array: the generated uint8[] setter runs a per-element
+        # Python assertion loop over bytes/list input (~seconds for a 1.85MB
+        # scan!) which stalled the whole relay (py-spy: every thread stuck in
+        # _point_cloud2.py data setter). ndarray takes the O(1) dtype-check
+        # fast path; frombuffer over the bytes slice is zero-copy.
+        pc.data = np.frombuffer(l["hits"], dtype=np.uint8)
         with self.ctx.pub_lock:
             self._pc_pubs[name].publish(pc)
