@@ -9,6 +9,14 @@ Used by relay.py (ROS2). test_decode.py exercises these against the C header siz
 
 import struct
 
+
+def payload_bytes(sample) -> bytes:
+    """Raw payload of a zenoh sample as bytes (works across zenoh-py 1.x
+    payload types). Shared by every domain relay module."""
+    p = sample.payload
+    return p.to_bytes() if hasattr(p, "to_bytes") else bytes(p)
+
+
 # EgoPosePayload: uint64 timestampNs, uint64 frameId, float world[16]  (== 80 bytes)
 EGO_FMT = "<QQ16f"
 EGO_SIZE = struct.calcsize(EGO_FMT)  # 80

@@ -15,6 +15,22 @@ AC 仿真 ↔ ROS2 中继（Linux 端）。订阅 Windows 上 `ac_sim_bridge` �
 > 联测务必控制 Windows 端发送总量 ≈8-15MB/s。压缩/控制等后续里程碑。
 > **ROS2 只装在这一侧**。
 
+## 模块结构（M5 起）
+
+```
+relay.py         入口/组装：节点引导 + zenoh session + 各域接线
+relay_context.py RelayContext：横切策略集中地——本地取时+ego-TF 钳制、帧精确配对、
+                 发布锁（zenoh 线程安全）、动态 TF + /tf_static 全集 latch。
+                 未来 /clock + use_sim_time 只改这里的取时来源。
+scene_relay.py   SceneRelay：ego_pose / detections_3d / lidar 数据域
+image_relay.py   CameraRelay：相机图像数据域
+wire.py          纯负载解码（+ payload_bytes），test_decode.py 守护
+frames.py        AC→ROS 坐标转换（全部定案事实见其 docstring）
+```
+
+**新增一种数据类型 = 写一个新的域模块**（构造接 `ctx`、`attach(session)` 声明订阅、自己发自己的
+话题），在 relay.py 接线一行——横切策略零复制。
+
 ## 坐标系（定案，2026-08 实测）
 
 全部转换在 [frames.py](ac_ros2_bridge/frames.py)（`ac_vec_to_ros` = `body_vec_to_ros` =
@@ -225,8 +241,6 @@ RViz2 Image 显示会自动归一化）。
 
 ## 后续计划
 
-- **M5 模块化重构**：relay.py 拆为 RelayContext（取时/配对/锁/TF 横切策略）+ scene_relay /
-  image_relay 按数据域分模块——新数据类型 = 新增一个域模块。
 - **图像压缩接收**：`MODE_COMPRESSED` → `sensor_msgs/CompressedImage` 分支（线格式已预留，
   Windows 端 NVENC 就绪后联调）。
 - **CameraInfo + 相机 TF**：`base_link→<cam>_frame` 静态 TF 与内参发布。
