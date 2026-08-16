@@ -236,12 +236,15 @@ RViz2 Image 显示会自动归一化）。
    无代价，跨机由 zenoh DROP 兜底）。
 5. **zenoh 回调线程 ≠ rclpy executor 线程**：rclpy publish 非线程安全 → `pub_lock` 串行化全部
    ROS 调用；配对状态另用 `_pair_lock`（发布永远不在配对锁内，防死锁）。
-6. **⚠️ sensor_msgs 的 uint8[] 字段严禁直接赋 bytes**（`pc.data = bytes(...)`）：rclpy 生成代码的
-   setter 对 bytes/list 输入做**逐元素 Python 断言循环**——1.85MB 雷达消息 ≈ 每条 1-3 秒，三个
-   线程同时陷入争 GIL，zenoh 回调被拖死 → 停读 TCP → 两端流量周期性归零（"relay 时不时停住"、
-   RViz 只有 3Hz 的真凶；一度误判为 WiFi 拥塞，iperf v4/v6 实测均稳才翻案）。**必须**
-   `np.frombuffer(data, dtype=np.uint8)` 走 ndarray O(1) 快速通道。定位手段：停住时
-   `sudo py-spy dump --pid <真身pid>`（注意 `ros2 run` 的壳进程不是真身，看 `ps -fp` 区分）。
+6. **⚠️ sensor_msgs 的 uint8[] 字段（data）在大载荷下必须直写私有槽位**：Humble 生成代码的
+   setter **没有 ndarray 快速通道**——numpy 数组直接被断言拒绝（ndarray 不是
+   `collections.abc.Sequence`）；而 bytes/list 输入触发**逐元素 Python 断言循环**（1.85MB 雷达
+   消息 ≈ 每条 1-3 秒），三线程同时陷入争 GIL，zenoh 回调被拖死 → 停读 TCP → 两端流量周期性
+   归零（"relay 时不时停住"、RViz 只有 3Hz 的真凶；一度误判为 WiFi 拥塞，iperf v4/v6 实测均稳
+   才翻案）。**正解：`pc._data = np.frombuffer(raw, dtype=np.uint8)`**（`_data` 就是 setter
+   内部写的 `__slots__` 字段；rclpy 的 C 序列化器原生消费 ndarray，零拷贝）。升级 ROS 发行版
+   时需复核。定位手段：停住时 `sudo py-spy dump --pid <真身pid>`（注意 `ros2 run` 的壳进程
+   不是真身，看 `ps -fp` 区分）。
 7. **带宽预算**（跨机链路）：Windows 端发送总量按预算制（见相机图像节与 ac_sim_bridge README）；
    链路本身实测 v4 687Mbps 稳定，"慢"先怀疑本进程再怀疑网络。
 

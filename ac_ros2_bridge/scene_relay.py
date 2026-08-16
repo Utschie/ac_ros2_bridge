@@ -295,11 +295,14 @@ class SceneRelay:
         pc.point_step = wire.LIDAR_HIT_SIZE
         pc.row_step = pc.point_step * pc.width
         pc.is_dense = True
-        # MUST be a numpy array: the generated uint8[] setter runs a per-element
-        # Python assertion loop over bytes/list input (~seconds for a 1.85MB
-        # scan!) which stalled the whole relay (py-spy: every thread stuck in
-        # _point_cloud2.py data setter). ndarray takes the O(1) dtype-check
-        # fast path; frombuffer over the bytes slice is zero-copy.
-        pc.data = np.frombuffer(l["hits"], dtype=np.uint8)
+        # Direct slot write (pc._data), NOT pc.data: Humble's generated uint8[]
+        # setter has no ndarray fast path - it REJECTS numpy arrays (not a
+        # collections.abc.Sequence) and runs a per-element Python assertion
+        # loop over bytes (~seconds per 1.85MB scan!) which stalled the whole
+        # relay (py-spy: every thread stuck in the data setter). _data is the
+        # __slots__ field the setter itself writes; assigning a zero-copy
+        # np.frombuffer view here is the fast path, and rclpy's C serializer
+        # consumes ndarrays natively. Re-check if the ROS distro changes.
+        pc._data = np.frombuffer(l["hits"], dtype=np.uint8)
         with self.ctx.pub_lock:
             self._pc_pubs[name].publish(pc)

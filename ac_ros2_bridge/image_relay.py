@@ -93,8 +93,9 @@ class CameraRelay:
         msg.encoding = ros_enc
         msg.is_bigendian = 0
         msg.step = img["data_len"] // img["height"]
-        # numpy (not bytes): the generated uint8[] setter per-element Python
-        # check over bytes costs ~seconds for a 4MB frame (see scene_relay).
-        msg.data = np.frombuffer(img["data"], dtype=np.uint8)
+        # Direct slot write (see scene_relay): the generated uint8[] setter
+        # either rejects ndarrays or loops per-element over bytes (~seconds
+        # for a 4MB frame). rclpy's C serializer consumes the ndarray natively.
+        msg._data = np.frombuffer(img["data"], dtype=np.uint8)
         with self.ctx.pub_lock:
             self._img_pubs[topic].publish(msg)
