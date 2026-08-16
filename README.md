@@ -3,16 +3,16 @@
 AC 仿真 ↔ ROS2 中继（Linux 端）。订阅 Windows 上 `ac_sim_bridge` 经 **Zenoh** 发出的数据，
 按 `shared/zenoh_payload.h` 解码，发布标准 ROS2 话题，让你在 **RViz** 里看到车移动 + 周围车 3D OBB。
 
-> 当前状态：**ego_pose / detections_3d / 雷达点云 / 相机图像全部端到端实测通过**（Humble +
-> peer 直连）——RViz2 中车辆、3D OBB、点云、图像均正常显示。订阅 `ac/ego_pose` +
-> `ac/detections_3d` + `ac/lidar/*/points` + `ac/camera/**`，发 `/ac/ego_pose`(`PoseStamped`)
-> + TF(`ac_world→base_link`) + `/ac/detections_3d`(`Detection3DArray`)
+> 当前状态：**ego_pose / detections_3d / 雷达点云 / 相机图像全部端到端实测通过且流畅**（Humble +
+> peer 直连；雷达 10Hz + 图像同传，2026-08 setter 悬案结案后实测，见下方"调试记录"）。
+> 订阅 `ac/ego_pose` + `ac/detections_3d` + `ac/lidar/*/points` + `ac/camera/**`，
+> 发 `/ac/ego_pose`(`PoseStamped`) + TF(`ac_world→base_link`) + `/ac/detections_3d`(`Detection3DArray`)
 > + `/ac/detections_3d_markers`(`MarkerArray` 保底) + `/ac/lidar/<name>/points`(`PointCloud2`)
 > + `/ac/camera/<cam>/<suffix>`(`Image`) + TF(`base_link→<name>_frame` 静态)。
 > **AC→ROS 坐标转换全部集中在 [frames.py](ac_ros2_bridge/frames.py)**
 > （4 个实测定案事实见其 docstring，C++ 侧对应 shared/ac_coords.h）。
-> **WiFi 带宽注意**：实测过载即崩溃（见"相机图像"节与 ac_sim_bridge README 带宽预算），
-> 联测务必控制 Windows 端发送总量 ≈8-15MB/s。压缩/控制等后续里程碑。
+> **带宽**：链路实测 ≈86MB/s（iperf 687Mbps，v4/v6 均稳）；zenoh 单 TCP 共用，总量留余量为宜
+> （原理性队头阻塞风险仍在，见 ac_sim_bridge README）。压缩/控制等后续里程碑。
 > **ROS2 只装在这一侧**。
 
 ## 模块结构（M5 起）
@@ -202,10 +202,11 @@ zenoh DROP 拥塞控制兜底，relay→RViz2 是本地回环、RELIABLE 无代�
 （相机 TF 属后续阶段；Image 显示不查 TF，不影响显示）。
 
 前置（Windows 侧）：AC 带 gamehook_ac + `custom_cameras.ini`；ac_sim_bridge 用
-`bridge_images.ini`（per-camera 分段，见其 README）决定转发哪些相机/模态/频率——
-**WiFi 联测务必只开 1-2 路、低 HZ**。实测拥塞崩溃曲线（仅 front、雷达关）：
-20Hz(84MB/s)→实收 0.6Hz、10Hz→1Hz、**2Hz(8.4MB/s)→满速 2Hz**——过载即崩溃，
-可用预算 ≈8-20MB/s；`AC_BRIDGE_IMAGE_HZ` env 可快速覆盖所有相机频率。
+`bridge_images.ini`（per-camera 分段，见其 README）决定转发哪些相机/模态/频率。
+**带宽更正（2026-08）**：早前实测的"拥塞崩溃曲线"（20Hz→实收 0.6Hz 等）测于 relay 的
+uint8[] setter bug 时期（见"调试记录"），瓶颈是接收端 Python 逐元素循环而非链路——iperf 实证
+链路 ≈86MB/s。setter 修复后高频图像值得重测真实上限；zenoh 单 TCP 队头阻塞的原理性风险仍在，
+联测仍建议按需配置相机/频率（`AC_BRIDGE_IMAGE_HZ` env 可快速覆盖）。
 
 ### 验证
 
@@ -245,8 +246,53 @@ RViz2 Image 显示会自动归一化）。
    内部写的 `__slots__` 字段；rclpy 的 C 序列化器原生消费 ndarray，零拷贝）。升级 ROS 发行版
    时需复核。定位手段：停住时 `sudo py-spy dump --pid <真身pid>`（注意 `ros2 run` 的壳进程
    不是真身，看 `ps -fp` 区分）。
-7. **带宽预算**（跨机链路）：Windows 端发送总量按预算制（见相机图像节与 ac_sim_bridge README）；
-   链路本身实测 v4 687Mbps 稳定，"慢"先怀疑本进程再怀疑网络。
+7. **带宽结论（更正）**：早前"过载即崩溃、预算 8-20MB/s"的结论被推翻——那是 setter bug 时期的
+   污染数据（见"调试记录"）。链路实测 ≈86MB/s（iperf v4/v6 均稳）；"慢"**先怀疑本进程
+   （py-spy），再怀疑网络**。zenoh 单 TCP 队头阻塞的原理性风险仍在，总量留余量为宜。
+
+## 调试记录：relay 周期性停住——uint8[] setter 逐元素循环（2026-08，已结案）
+
+### 现象
+
+- 雷达点云在 RViz2 只有 ~3Hz（配置 10Hz，78.5K 点/扫 × 24B ≈ 1.85MB/条）；
+- relay 进程**时不时停住**：两端（台式机/笔记本）网卡流量**同时**归零到几百 B/s，间歇又突发
+  17.5MB/s（网卡 3 秒采样看到的是突发，10 秒采样只有 4.6MB/s——停住期占多数）；
+- 更早的"消息收得很慢"、图像"20Hz 配置实收 0.6Hz"等历史症状同源。
+
+### 诊断历程
+
+| 阶段 | 怀疑原因 | 验证手段 | 结果 |
+|------|---------|---------|------|
+| 1 | WiFi 带宽不够/拥塞崩溃 | bridge 日志 `lidarPts=702K/s` 属实；对账 78.5K点/扫 → 发送端确实 ~10Hz | 发送端正常，继续查 |
+| 2 | 笔记本 WiFi 省电 | `iw set power_save off` 后复测 | 仍停 ✗ |
+| 3 | RViz 消费慢反压 DDS | 关 RViz 只跑 relay | 仍停 ✗ |
+| 4 | IPv6 路径问题（zenoh 实际走 v6 反向连入） | `iperf3 -c`（v4）与 `iperf3 -6`（v6）各 60s | **687Mbps / v6 均稳**，链路洗清 ✗ |
+| 5 | **relay 进程内部** | 停住时 `sudo py-spy dump`（注意 `ros2 run` 的壳进程≠真身，`ps -fp` 区分） | **三个线程全部卡在 `_point_cloud2.py` 的 `data` setter ✓** |
+
+### 根因
+
+Humble 生成的 `uint8[] data` setter：**没有 ndarray 快速通道**（numpy 数组被断言直接拒绝——
+ndarray 不是 `collections.abc.Sequence`）；而 **bytes/list 输入触发逐元素 Python 断言循环**
+（`all(isinstance(v,int) ... for v in value)` × 185 万元素 ≈ **每条雷达消息 1-3 秒**）。三线程
+（ego 回调/lidar 回调/配对定时器）同时陷入循环争 GIL → zenoh 回调线程被拖死 → 停止从 TCP 读
+数据 → TCP 窗口关死 → **两端流量同时归零**；某条循环跑完 → 突发 → 再陷 → 周期性"停住"。
+
+### 修复（含一次弯路）
+
+- v1：`pc.data = np.frombuffer(...)` → 运行时被 Humble 断言拒绝（`AssertionError: ... must be
+  a set or sequence ...`）；
+- **v2（正解）**：直写私有槽位 `pc._data = np.frombuffer(raw, dtype=np.uint8)`——`_data` 就是
+  setter 内部落盘的 `__slots__` 字段，跳过全部校验；rclpy 的 C 序列化器原生消费 ndarray
+  （buffer 协议零拷贝）。雷达/图像两处同改，**实测点云与图像全流畅**。升级 ROS 发行版需复核。
+
+### 经验教训
+
+1. **应用层"看似网络慢"，先 `py-spy dump` 看线程卡在哪，再怀疑网线**——本次五个嫌疑四个是网络侧，
+   全部被排除；
+2. **两台机同时看网卡计数 + 区分突发/稳态**（短窗采样会把积压清空误读成稳态吞吐）；
+3. **iperf 要分 v4/v6 各测**（zenoh 实际走的族可能和直觉不同）；
+4. `ros2 run` 会先起一个壳进程，py-spy/pgrep 抓错 PID 会得到"一切正常"的假象；
+5. 大载荷 `uint8[]` 字段：**直写 `msg._data = np.frombuffer(...)`**，绝不走 setter。
 
 ## 后续计划
 
