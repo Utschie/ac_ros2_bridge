@@ -3,14 +3,16 @@
 AC 仿真 ↔ ROS2 中继（Linux 端）。订阅 Windows 上 `ac_sim_bridge` 经 **Zenoh** 发出的数据，
 按 `shared/zenoh_payload.h` 解码，发布标准 ROS2 话题，让你在 **RViz** 里看到车移动 + 周围车 3D OBB。
 
-> 当前状态：**中继 M1 + 激光雷达全部端到端实测通过**（Humble + peer 直连）——RViz 中车辆、
-> 3D OBB、4 雷达点云均与游戏画面一致；**相机图像（M2）已实现，待端到端联测**（见下方
-> "相机图像"节）。订阅 `ac/ego_pose` + `ac/detections_3d` + `ac/lidar/*/points` + `ac/camera/**`，
-> 发 `/ac/ego_pose`(`PoseStamped`) + TF(`ac_world→base_link`) + `/ac/detections_3d`(`Detection3DArray`)
+> 当前状态：**ego_pose / detections_3d / 雷达点云 / 相机图像全部端到端实测通过**（Humble +
+> peer 直连）——RViz2 中车辆、3D OBB、点云、图像均正常显示。订阅 `ac/ego_pose` +
+> `ac/detections_3d` + `ac/lidar/*/points` + `ac/camera/**`，发 `/ac/ego_pose`(`PoseStamped`)
+> + TF(`ac_world→base_link`) + `/ac/detections_3d`(`Detection3DArray`)
 > + `/ac/detections_3d_markers`(`MarkerArray` 保底) + `/ac/lidar/<name>/points`(`PointCloud2`)
-> + `/ac/camera/<cam>/<suffix>`(`Image`) + TF(`base_link→<name>_frame`)。
+> + `/ac/camera/<cam>/<suffix>`(`Image`) + TF(`base_link→<name>_frame` 静态)。
 > **AC→ROS 坐标转换全部集中在 [frames.py](ac_ros2_bridge/frames.py)**
-> （4 个实测定案事实见其 docstring，C++ 侧对应 shared/ac_coords.h）。压缩/控制等后续里程碑。
+> （4 个实测定案事实见其 docstring，C++ 侧对应 shared/ac_coords.h）。
+> **WiFi 带宽注意**：实测过载即崩溃（见"相机图像"节与 ac_sim_bridge README 带宽预算），
+> 联测务必控制 Windows 端发送总量 ≈8-15MB/s。压缩/控制等后续里程碑。
 > **ROS2 只装在这一侧**。
 
 ## 坐标系（定案，2026-08 实测）
@@ -95,13 +97,17 @@ Linux 防火墙放行 7447（用 ufw 的话）：`sudo ufw allow 7447`。
 ### 3. 按顺序启动
 
 1. **Windows：启动 AC**（带 gamehook_ac + scene_sync 插件，进有车的场景）。
-2. **Windows：跑桥**（`set ZENOH_CONFIG` 与 exe 必须在**同一个** cmd 窗口）：
-   ```bat
-   set ZENOH_CONFIG=C:\ac\bridge.json5
-   cd ac_sim_bridge\build\Release
-   ac_sim_bridge.exe
-   ```
-   应打印 `connected to AC_SceneCache_v2` + 每秒 `frame=... detections=N ego=(...)`。
+2. **Windows：跑桥**——两种方式任选：
+   - 命令行（`set ZENOH_CONFIG` 与 exe 在**同一个** cmd 窗口）：
+     ```bat
+     set ZENOH_CONFIG=C:\ac\bridge.json5
+     cd ac_sim_bridge\build\Release
+     ac_sim_bridge.exe
+     ```
+   - **双击部署**：四件套（exe/zenohc.dll/bridge.json5/bridge_images.ini）放独立目录（推荐
+     `<AC安装目录>\ac_bridge\` 子目录，⚠️ 不要放 acs.exe 同目录——详见 ac_sim_bridge README），
+     双击运行，配置自动从 exe 旁读取。
+   应打印 `connected to AC_SceneCache_v2` + 每秒 `frame=... detections=N lidarMB/s=... ego=(...)`。
 3. **Linux：跑中继**：
    ```bash
    cd ~/ac_ws && source install/setup.bash
@@ -179,15 +185,17 @@ zenoh DROP 拥塞控制兜底，relay→RViz2 是本地回环、RELIABLE 无代�
 为 **RGBA8 彩色语义图**（生产端如此，mono8 class-id 为未来项）。`frame_id = <cam>_frame`
 （相机 TF 属后续阶段；Image 显示不查 TF，不影响显示）。
 
-前置（Windows 侧）：AC 带 gamehook_ac + `custom_cameras.ini`，ac_sim_bridge 自动转发
-（控制台出现 `image: publisher 'ac/camera/...'` 与 `img stats` 行；默认 color、10Hz/路、全部相机，
-≈170MB/s @5 路——WiFi 87MB/s 上限，跨机联测请减少相机或降 `AC_BRIDGE_IMAGE_HZ`）。
+前置（Windows 侧）：AC 带 gamehook_ac + `custom_cameras.ini`；ac_sim_bridge 用
+`bridge_images.ini`（per-camera 分段，见其 README）决定转发哪些相机/模态/频率——
+**WiFi 联测务必只开 1-2 路、低 HZ**。实测拥塞崩溃曲线（仅 front、雷达关）：
+20Hz(84MB/s)→实收 0.6Hz、10Hz→1Hz、**2Hz(8.4MB/s)→满速 2Hz**——过载即崩溃，
+可用预算 ≈8-20MB/s；`AC_BRIDGE_IMAGE_HZ` env 可快速覆盖所有相机频率。
 
 ### 验证
 
 ```bash
 ros2 topic list                      # 应有 /ac/camera/front/image_raw 等
-ros2 topic hz /ac/camera/front/image_raw        # ≈10
+ros2 topic hz /ac/camera/front/image_raw        # ≈配置的 HZ（WiFi 联测建议 2）
 ros2 topic echo /ac/camera/front/image_raw --field encoding   # rgba8（或 bgra8）
 ros2 topic echo /ac/camera/front/image_raw --field width --once  # 1365（保比例裁剪）
 ```
@@ -197,6 +205,32 @@ RViz2：Fixed Frame `ac_world` → Add → **Image** → 话题 `/ac/camera/fron
 报给 bridge 侧改 encOf）。深度/语义图同法（`image_depth` 显示为 32FC1 灰度浮点，
 RViz2 Image 显示会自动归一化）。
 
-## 后续里程碑（见总体计划）
-- 图像压缩（NVENC H.264）→ `sensor_msgs/CompressedImage`；CameraInfo/相机 TF。
-- 控制下行：订阅 ROS2 `/ac/vehicle_cmd` → Zenoh `ac/vehicle_cmd` → Windows 桥写 `AC_ControlCache_v1`。
+## 踩坑记录（按发现顺序；详细机理见上文对应小节）
+
+1. **时间戳跨机钟差 → "No Transform" 闪烁**：透传 Windows 墙钟，两机不同步 → RViz2 看到
+   "未来时间戳"消息、tf2 拒绝外推 → 间歇闪烁。修复 = 本地重打 + 钳制（"时间戳与 TF 策略"节）。
+2. **配对缺失 → 包围盒"向前窜"**：仅钳制不保证同帧——zenoh 回调乱序时 dets 绑到上一帧 ego
+   位姿，车动时盒子相对 base_link 轴前偏 v×20ms（30m/s ≈0.6m，清晰可见）。修复 = 按生产端
+   共享时间戳做**帧精确配对**（ego/dets/lidar 同帧同 ts）。
+3. **/tf_static latch depth=1 → 部分雷达永不显示**：逐雷达分次 sendTransform，晚启动的 RViz2
+   只拿到最后一个 latched 样本 → 其余雷达链路断裂，点云卡 message filter "queue is full"。
+   修复 = 全部静态变换**放进一条消息发送**，每次变更重发全集。
+4. **图像 QoS 不兼容 → 无图**：`qos_profile_sensor_data`(BEST_EFFORT) 发布器 + RViz2 Image
+   显示默认 RELIABLE 订阅 = 唯一不兼容组合（DDS 拒绝配对）。修复 = 发布器 RELIABLE（本地回环
+   无代价，跨机由 zenoh DROP 兜底）。
+5. **zenoh 回调线程 ≠ rclpy executor 线程**：rclpy publish 非线程安全 → `pub_lock` 串行化全部
+   ROS 调用；配对状态另用 `_pair_lock`（发布永远不在配对锁内，防死锁）。
+6. **带宽拥塞崩溃**（跨机链路）：过载时好吞吐塌缩（84MB/s 需求 → 0.6Hz 实收），不是"尽力而为"
+   ——Windows 端必须预算制（见相机图像节与 ac_sim_bridge README）。
+
+## 后续计划
+
+- **M5 模块化重构**：relay.py 拆为 RelayContext（取时/配对/锁/TF 横切策略）+ scene_relay /
+  image_relay 按数据域分模块——新数据类型 = 新增一个域模块。
+- **图像压缩接收**：`MODE_COMPRESSED` → `sensor_msgs/CompressedImage` 分支（线格式已预留，
+  Windows 端 NVENC 就绪后联调）。
+- **CameraInfo + 相机 TF**：`base_link→<cam>_frame` 静态 TF 与内参发布。
+- **/clock + use_sim_time**：relay 发布 /clock，届时只替换 RelayContext 的取时来源。
+- **统一帧号源**：gamehook_ac/optix 把场景帧号写进 image/lidar SHM → 严格帧对齐（当前
+  ego↔dets 严格、ego↔lidar ≈1-2 帧、图像独立，见"帧对齐现状"）。
+- **控制下行**：订阅 ROS2 `/ac/vehicle_cmd` → Zenoh → Windows 桥写 `AC_ControlCache_v1`。
