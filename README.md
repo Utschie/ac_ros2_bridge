@@ -178,6 +178,20 @@ ros2 topic hz /ac/vehicle_state            # ~10Hz
 见 `ac_msgs/README.md` 与 `ac_sim_bridge/README.md`。联测验收项之一 =
 **重载（图像/雷达全开）下控制延迟观测**。
 
+### 一键全命令回归（scenario_test）
+
+`scenario_test.py` 是 M4 全链路的脚本化回归（ROS2 → relay → zenoh → bridge → 游戏），
+覆盖**所有控制字段**：等 GO → 1挡起步 → 2挡 → 相对降/升挡 → 左/右转向 → 刹车 →
+离合 → 手刹 → DRS/KERS → override 关/开语义 → 弃权，结束打印阶段×预期×反馈挡位
+时间线小结表。Windows 侧另有 zenoh 直发的姊妹版（`ac_sim_bridge/tools/
+vehicle_cmd_scenario.py`，跳过 ROS 测 bridge 单段时用）。
+
+```bash
+ros2 run ac_ros2_bridge scenario                                  # 正赛：等 GO 自动开始
+ros2 run ac_ros2_bridge scenario --ros-args -p skip_go:=true      # 练习赛
+ros2 run ac_ros2_bridge scenario --ros-args -p throttle_scale:=0.5  # 油门刹车减半
+```
+
 ### 5. 排错速查
 
 | 症状 | 查什么 |

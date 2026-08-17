@@ -22,6 +22,7 @@ setup(
     entry_points={
         "console_scripts": [
             "relay = ac_ros2_bridge.relay:main",
+            "scenario = ac_ros2_bridge.scenario_test:main",
         ],
     },
 )
