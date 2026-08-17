@@ -12,7 +12,9 @@ standard ROS2 messages. Module layout (M5):
                   will land there (swap the clock source only).
   scene_relay.py   SceneRelay  - ego_pose / detections_3d / lidar domain
   image_relay.py   CameraRelay - camera image domain
-  wire.py          pure payload decode (+ payload_bytes helper)
+  control_relay.py ControlRelay - vehicle control downlink (ROS->zenoh,
+                  the FIRST reverse-direction module) + state feedback up
+  wire.py          pure payload encode/decode (+ payload_bytes helper)
   frames.py        ALL AC->ROS coordinate math (see its docstring)
 
 Topics:
@@ -24,6 +26,11 @@ Topics:
                        + static TF base_link-><name>_frame
   ac/camera/<n>/<s> -> '/ac/camera/<n>/<s>' (Image; s = image_raw |
                        image_depth | image_classes)
+  /ac/vehicle_cmd   -> zenoh 'ac/vehicle_cmd' (ac_msgs/VehicleControl,
+                       RELIABLE; Windows bridge drives the game - shm hook
+                       or vJoy per its bridge_control.ini, ROS side unaware)
+  ac/vehicle_state  -> '/ac/vehicle_state' (ac_msgs/VehicleState:
+                       gear / speed / GO race-start flag)
 
 TF tree: ac_world -> base_link -> {front,rear,...}_frame. Points/images stay in
 their sensor frames; RViz2 and downstream consumers resolve via the TF chain.
@@ -55,6 +62,7 @@ import zenoh
 from .relay_context import RelayContext
 from .scene_relay import SceneRelay
 from .image_relay import CameraRelay
+from .control_relay import ControlRelay
 
 
 class AcRelay(Node):
@@ -73,11 +81,14 @@ class AcRelay(Node):
         # Domain modules (subscribe in attach(); publish their own topics).
         self._scene = SceneRelay(self._ctx)
         self._image = CameraRelay(self._ctx)
+        self._control = ControlRelay(self._ctx)
         self._scene.attach(self._session)
         self._image.attach(self._session)
+        self._control.attach(self._session)
 
         self.get_logger().info("ac_relay ready: subscribing ac/ego_pose + ac/detections_3d "
-                               "+ ac/lidar/*/points + ac/camera/** "
+                               "+ ac/lidar/*/points + ac/camera/** + ac/vehicle_state; "
+                               "forwarding /ac/vehicle_cmd -> zenoh "
                                "(AC->ROS axis remap in frames.py)")
 
     def close(self) -> None:

@@ -55,6 +55,60 @@ ENCODING_TO_ROS = {
 
 CLASS_CAR = 1
 
+# ControlPayload: float steering/throttle/brake/clutch/handBrake,
+#                 int32 requestedGearIndex, uint32 buttons, uint32 flags (== 32 bytes)
+CONTROL_FMT = "<5fiII"
+CONTROL_SIZE = struct.calcsize(CONTROL_FMT)  # 32
+
+# button bits (ac_ctrl::BTN_* in shared/control_shm.h) - VehicleControl bools pack into these
+BTN_GEAR_UP = 0x01
+BTN_GEAR_DN = 0x02
+BTN_DRS = 0x04
+BTN_KERS = 0x08
+BTN_HANDBRAKE_ON = 0x10
+# flags bit: request takeover (maps to ac_ctrl::FLAG_OVERRIDE_ENABLED)
+FLAG_OVERRIDE = 0x01
+
+# VehicleStatePayload: uint64 timestampNs, int32 gear, float speed, uint32 flags (== 20 bytes)
+VSTATE_FMT = "<QifI"
+VSTATE_SIZE = struct.calcsize(VSTATE_FMT)  # 20
+
+# feedback flag bits (ac_ctrl::FLAG_FEEDBACK_* in shared/control_shm.h)
+FLAG_FEEDBACK_GO = 0x01          # race start signal (lights out after countdown)
+FLAG_FEEDBACK_LIGHTS_ON = 0x02   # start lights currently on (countdown running)
+
+# gear encoding (verified in-game): 0=R 1=N 2..8=1..7; sentinel below = leave as is
+GEAR_NO_CHANGE = -100
+
+
+def encode_control(steering: float, throttle: float, brake: float, clutch: float,
+                   hand_brake: float, requested_gear_index: int,
+                   gear_up: bool = False, gear_dn: bool = False, drs: bool = False,
+                   kers: bool = False, handbrake_on: bool = False,
+                   override_enabled: bool = False) -> bytes:
+    """Pack a ControlPayload (32 bytes) for zenoh key 'ac/vehicle_cmd'.
+
+    The bool arguments map onto the buttons bitfield (BTN_* above) exactly as
+    gamehook_control's plugin and the vJoy backend expect; callers never touch
+    the bits directly."""
+    buttons = (0
+               | (BTN_GEAR_UP if gear_up else 0)
+               | (BTN_GEAR_DN if gear_dn else 0)
+               | (BTN_DRS if drs else 0)
+               | (BTN_KERS if kers else 0)
+               | (BTN_HANDBRAKE_ON if handbrake_on else 0))
+    flags = FLAG_OVERRIDE if override_enabled else 0
+    return struct.pack(CONTROL_FMT, steering, throttle, brake, clutch, hand_brake,
+                       requested_gear_index, buttons, flags)
+
+
+def decode_vehicle_state(data: bytes) -> dict:
+    """Decode a VehicleStatePayload (20 bytes) from zenoh key 'ac/vehicle_state'."""
+    if len(data) < VSTATE_SIZE:
+        raise ValueError(f"vehicle_state payload too short: {len(data)} < {VSTATE_SIZE}")
+    ts_ns, gear, speed, flags = struct.unpack(VSTATE_FMT, data[:VSTATE_SIZE])
+    return {"timestamp_ns": ts_ns, "gear": gear, "speed": speed, "flags": flags}
+
 
 def decode_ego(data: bytes) -> dict:
     """Decode an EgoPosePayload (80 bytes). 'world' is the 16-float row-major 4x4."""

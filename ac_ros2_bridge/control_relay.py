@@ -1,0 +1,111 @@
+"""ControlRelay - vehicle control downlink + state feedback domain module (M4).
+
+The FIRST reverse-direction module (ROS -> zenoh), opposite to scene/image:
+
+  /ac/vehicle_cmd  (ac_msgs/VehicleControl, RELIABLE)  -> zenoh 'ac/vehicle_cmd'
+      On the Windows side ac_sim_bridge subscribes the key and drives the game
+      via the configured backend (bridge_control.ini MODE=shm|vjoy); the ROS
+      side is unaware of which backend is in use.
+  zenoh 'ac/vehicle_state'  ->  /ac/vehicle_state (ac_msgs/VehicleState)
+      gear / speed / GO flag fed back from the game (plugin feedback block).
+
+Threading model (differs per direction):
+  _on_cmd runs on the rclpy executor thread; zenoh session.put is thread-safe
+  -> no lock needed.
+  _on_state runs on a zenoh callback thread; rclpy publish is NOT thread-safe
+  -> always under ctx.pub_lock (relay_context policy 3).
+
+⚠ CODING RULES for future edits of this module (from the 2026-08 setter-bug
+post-mortem — see ac_ros2_bridge README "调试记录"):
+  1. NEVER assign large arrays through rclpy setters (uint8[] data etc.):
+     Humble's generated setters run a per-element Python assertion loop
+     (≈1-3 s per MB, once masqueraded as network congestion). Direct-write
+     the private slot instead:  msg._data = np.frombuffer(raw, np.uint8)
+     (rclpy's C serializer consumes ndarray natively, zero-copy).
+     VehicleControl/VehicleState are all-scalar today; if any array field
+     is ever added, rule 1 applies immediately.
+  2. zenoh callbacks publishing ROS = only under ctx.pub_lock.
+  3. When reception "feels slow", suspect this process first (py-spy dump),
+     then the network.
+"""
+
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+
+from ac_msgs.msg import VehicleControl, VehicleState
+
+from . import wire
+
+
+class ControlRelay:
+    def __init__(self, ctx):
+        self.ctx = ctx
+        node = ctx.node
+
+        # Commands must not drop: RELIABLE (images use DROP on the zenoh side;
+        # control is the opposite trade-off - tiny messages, loss intolerant).
+        cmd_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+        self._sub_cmd = node.create_subscription(
+            VehicleControl, "/ac/vehicle_cmd", self._on_cmd, cmd_qos)
+        self._pub_state = node.create_publisher(VehicleState, "/ac/vehicle_state", 10)
+
+        self._session = None
+        self._cmd_count = 0
+        self._last_diag = 0.0
+        self._bad_payload_logged = 0
+
+    def attach(self, session) -> None:
+        self._session = session
+        session.declare_subscriber("ac/vehicle_state", self._on_state)
+
+    # ---- ROS -> zenoh (rclpy executor thread; session.put is thread-safe) ----
+
+    def _on_cmd(self, msg: VehicleControl) -> None:
+        if self._session is None:
+            return
+        payload = wire.encode_control(
+            steering=msg.steering,
+            throttle=msg.throttle,
+            brake=msg.brake,
+            clutch=msg.clutch,
+            hand_brake=msg.hand_brake,
+            requested_gear_index=msg.requested_gear_index,
+            gear_up=msg.gear_up,
+            gear_dn=msg.gear_dn,
+            drs=msg.drs,
+            kers=msg.kers,
+            handbrake_on=msg.handbrake_on,
+            override_enabled=msg.override_enabled,
+        )
+        self._session.put("ac/vehicle_cmd", payload)
+
+        # ~1Hz one-liner so a live publisher is visible in the console
+        self._cmd_count += 1
+        import time as _t
+        now = _t.monotonic()
+        if now - self._last_diag > 1.0:
+            self._last_diag = now
+            self.ctx.log.info(
+                f"vehicle_cmd -> zenoh  n={self._cmd_count} "
+                f"steer={msg.steering:+.2f} thr={msg.throttle:.2f} "
+                f"brk={msg.brake:.2f} gear={msg.requested_gear_index} "
+                f"override={'on' if msg.override_enabled else 'off'}")
+
+    # ---- zenoh -> ROS (zenoh callback thread -> publish under pub_lock) ----
+
+    def _on_state(self, sample) -> None:
+        try:
+            v = wire.decode_vehicle_state(wire.payload_bytes(sample))
+        except Exception as ex:  # noqa: BLE001
+            self._bad_payload_logged += 1
+            if self._bad_payload_logged <= 5 or self._bad_payload_logged % 100 == 0:
+                self.ctx.log.warn(f"vehicle_state decode failed ({ex}), "
+                                  f"count={self._bad_payload_logged}")
+            return
+
+        m = VehicleState()
+        m.header.stamp = self.ctx.now().to_msg()
+        m.gear = v["gear"]
+        m.speed = v["speed"]
+        m.flags = v["flags"]
+        with self.ctx.pub_lock:
+            self._pub_state.publish(m)

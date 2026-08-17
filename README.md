@@ -24,7 +24,9 @@ relay_context.py RelayContext：横切策略集中地——本地取时+ego-TF �
                  未来 /clock + use_sim_time 只改这里的取时来源。
 scene_relay.py   SceneRelay：ego_pose / detections_3d / lidar 数据域
 image_relay.py   CameraRelay：相机图像数据域
-wire.py          纯负载解码（+ payload_bytes），test_decode.py 守护
+control_relay.py ControlRelay：控制下行（ROS→zenoh，首个反向模块）+ 状态反馈上行；
+                 顶部注释含 uint8[] setter 禁用等编码铁律（调试记录教训）
+wire.py          纯负载编码/解码（+ payload_bytes），test_decode.py 守护
 frames.py        AC→ROS 坐标转换（全部定案事实见其 docstring）
 ```
 
@@ -129,7 +131,7 @@ Linux 防火墙放行 7447（用 ufw 的话）：`sudo ufw allow 7447`。
    cd ~/ac_ws && source install/setup.bash
    ZENOH_CONFIG=~/relay.json5 ros2 run ac_ros2_bridge relay
    ```
-   预期日志：`[INFO] [ac_relay]: ac_relay ready: subscribing ac/ego_pose + ac/detections_3d + ac/lidar/*/points + ac/camera/** (AC->ROS axis remap in frames.py)`；收到相机数据后还会打 `image publisher '/ac/camera/<cam>/image_raw' (WxH rgba8)`。
+   预期日志：`[INFO] [ac_relay]: ac_relay ready: subscribing ac/ego_pose + ac/detections_3d + ac/lidar/*/points + ac/camera/** + ac/vehicle_state; forwarding /ac/vehicle_cmd -> zenoh ...`；收到相机数据后还会打 `image publisher '/ac/camera/<cam>/image_raw' (WxH rgba8)`。
 
 ### 4. 验证（从简到繁，均已实测）
 
@@ -150,6 +152,31 @@ rviz2
 - 或 Add → **Detection3DArray**，话题 `/ac/detections_3d`（需装 `vision-msgs-rviz-plugins`）。
 
 开车 → 车移动 + 周围车 3D OBB 跟随 = 全链路（AC → gamehook 插件 → SHM → ac_sim_bridge → Zenoh → relay → ROS2 → RViz）打通。
+
+## 控制下行（M4）：ROS2 开车
+
+`/ac/vehicle_cmd`（`ac_msgs/VehicleControl`，**RELIABLE QoS、定频流式 ≥20Hz**）→ relay 打包
+32B `ControlPayload` → zenoh `ac/vehicle_cmd` → Windows bridge 按其 `bridge_control.ini`
+的 `MODE=shm|vjoy` 注入游戏（ROS 侧对后端无感知，切换方式只改 Windows 端 ini）。
+反向：zenoh `ac/vehicle_state` → `/ac/vehicle_state`（`ac_msgs/VehicleState`：挡位/车速/GO）。
+**安全语义**：停止发布 ≈0.5s（bridge `RX_TIMEOUT_MS`）自动弃权回人工驾驶。
+
+```bash
+# 依赖消息包：工作区根 colcon build --packages-select ac_msgs ac_ros2_bridge
+# 开车（先按既有流程起 Windows bridge + AC；正赛会自动开赛，GO 后车才动）：
+ros2 topic pub -r 50 /ac/vehicle_cmd ac_msgs/VehicleControl \
+  "{override_enabled: true, throttle: 0.2, steering: 0.0}"
+# 换挡（0=R 1=N 2..8=1..7；-100=不改）：
+ros2 topic pub -r 50 /ac/vehicle_cmd ac_msgs/VehicleControl \
+  "{override_enabled: true, throttle: 0.3, requested_gear_index: 2}"
+# 反馈：
+ros2 topic echo /ac/vehicle_state          # gear / speed / flags(bit0=GO)
+ros2 topic hz /ac/vehicle_state            # ~10Hz
+```
+
+挡位/按钮语义、shm 与 vjoy 的 steering 语义差异、单 TCP 队头阻塞余量纪律：
+见 `ac_msgs/README.md` 与 `ac_sim_bridge/README.md`。联测验收项之一 =
+**重载（图像/雷达全开）下控制延迟观测**。
 
 ### 5. 排错速查
 

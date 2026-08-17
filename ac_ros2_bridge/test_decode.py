@@ -111,10 +111,44 @@ def main() -> None:
     assert wire.ENCODING_TO_ROS[2] == "32FC1"
     assert wire.ENCODING_TO_ROS[3] == "mono8"
 
+    # control: sizes must match shared/zenoh_payload.h (ControlPayload 32B)
+    assert wire.CONTROL_SIZE == 32, f"CONTROL_SIZE {wire.CONTROL_SIZE} != 32"
+    assert wire.VSTATE_SIZE == 20, f"VSTATE_SIZE {wire.VSTATE_SIZE} != 20"
+
+    # control round-trip: values + bool->buttons bit packing + flags
+    c = wire.encode_control(steering=-0.25, throttle=0.3, brake=0.0, clutch=0.0,
+                            hand_brake=0.0, requested_gear_index=2,   # 1st gear
+                            gear_up=False, gear_dn=True, drs=True, kers=False,
+                            handbrake_on=True, override_enabled=True)
+    assert len(c) == 32
+    import struct as _s
+    st, th, br, cl, hb, gear, buttons, flags = _s.unpack(wire.CONTROL_FMT, c)
+    assert abs(st - (-0.25)) < 1e-6 and abs(th - 0.3) < 1e-6
+    assert gear == 2
+    assert buttons == (wire.BTN_GEAR_DN | wire.BTN_DRS | wire.BTN_HANDBRAKE_ON)
+    assert flags == wire.FLAG_OVERRIDE
+    # all-clear command: nothing pressed, not overriding
+    c0 = wire.encode_control(0, 0, 0, 0, 0, wire.GEAR_NO_CHANGE)
+    assert _s.unpack(wire.CONTROL_FMT, c0)[6:8] == (0, 0)
+
+    # vehicle_state round-trip: gear/speed/flags + GO bit convention
+    v = wire.decode_vehicle_state(_s.pack(wire.VSTATE_FMT, 987654321, 2, 12.5,
+                                          wire.FLAG_FEEDBACK_GO))
+    assert v["timestamp_ns"] == 987654321
+    assert v["gear"] == 2 and abs(v["speed"] - 12.5) < 1e-6
+    assert v["flags"] & wire.FLAG_FEEDBACK_GO
+    # truncation must raise
+    try:
+        wire.decode_vehicle_state(b"\x00" * 10)
+        raise AssertionError("truncated vehicle_state must raise")
+    except ValueError:
+        pass
+
     print(f"decode_check OK: EGO_SIZE={wire.EGO_SIZE} "
           f"DET_HDR_SIZE={wire.DET_HDR_SIZE} DET_SIZE={wire.DET_SIZE} "
           f"LIDAR_SIZE={wire.LIDAR_SIZE} LIDAR_HIT_SIZE={wire.LIDAR_HIT_SIZE} "
-          f"IMAGE_SIZE={wire.IMAGE_SIZE} "
+          f"IMAGE_SIZE={wire.IMAGE_SIZE} CONTROL_SIZE={wire.CONTROL_SIZE} "
+          f"VSTATE_SIZE={wire.VSTATE_SIZE} "
           f"(matches shared/zenoh_payload.h + shared/lidar_shm.h)")
 
 
