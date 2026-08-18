@@ -35,7 +35,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
-from ac_msgs.msg import VehicleControl, VehicleState
+from ac_msgs.msg import VehicleControl, VehicleState, GameControl
 
 GEAR_NO_CHANGE = -100
 FLAG_FEEDBACK_GO = 0x01
@@ -51,21 +51,23 @@ def clamp01(v):
 
 
 # (name, duration_s, command kwargs, in-game expectation)
+# REL_DN/REL_UP run AFTER BRAKE on purpose: downshifting into 1st at ~16 m/s
+# is blocked by the game's shift protection (observed 2026-08-18).
 PHASES = [
     ("LAUNCH",       4.0, dict(throttle=0.25, requested_gear_index=2),
      "1st gear engages (feedback gear -> 2), car creeps forward"),
     ("GEAR2",        4.0, dict(throttle=0.35, requested_gear_index=3),
      "upshift to 2nd (feedback gear -> 3), speed rises"),
-    ("REL_DN",       2.5, dict(throttle=0.30, gear_dn=True),
-     "relative downshift button (feedback gear -> 2)"),
-    ("REL_UP",       2.5, dict(throttle=0.30, gear_up=True),
-     "relative upshift button (feedback gear -> 3)"),
     ("STEER_L",      3.0, dict(throttle=0.25, steering=-0.4),
      "steering left; car turns left"),
     ("STEER_R",      3.0, dict(throttle=0.25, steering=0.4),
      "steering right; car comes back / turns right"),
     ("BRAKE",        3.0, dict(throttle=0.0, brake=0.6),
      "brakes hard; speed feedback drops toward 0"),
+    ("REL_DN",       2.5, dict(throttle=0.10, gear_dn=True),
+     "relative downshift button at low speed (feedback gear -> 2)"),
+    ("REL_UP",       2.5, dict(throttle=0.30, gear_up=True),
+     "relative upshift button (feedback gear -> 3)"),
     ("CLUTCH",       2.5, dict(throttle=0.3, clutch=1.0),
      "clutch in: revs flare, drive disengaged"),
     ("HANDBRAKE",    2.5, dict(throttle=0.2, handbrake_on=True, hand_brake=1.0),
@@ -81,13 +83,13 @@ PHASES = [
 
 class ScenarioNode(Node):
     # states
-    WAIT_FEEDBACK, WAIT_GO, START_DELAY, RUN, DONE = range(5)
+    WAIT_FEEDBACK, START_RACE, WAIT_GO, START_DELAY, RUN, DONE = range(6)
 
     def __init__(self):
         super().__init__("scenario_test")
         for name, default in [("skip_go", False), ("go_timeout", 300.0),
                               ("start_delay", 1.0), ("throttle_scale", 1.0),
-                              ("rate", 50.0)]:
+                              ("rate", 50.0), ("no_start_race", False)]:
             self.declare_parameter(name, default)
         p = lambda n: self.get_parameter(n).value  # noqa: E731
         self.skip_go = bool(p("skip_go"))
@@ -101,6 +103,9 @@ class ScenarioNode(Node):
         self.pub = self.create_publisher(
             VehicleControl, "/ac/vehicle_cmd",
             QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE))
+        self.pub_game = self.create_publisher(
+            GameControl, "/ac/game_cmd",
+            QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE))
         self.create_subscription(VehicleState, "/ac/vehicle_state",
                                  self._on_state, 10)
 
@@ -112,10 +117,11 @@ class ScenarioNode(Node):
         self.fb_flags = 0
         self.gear_history = []   # (monotonic_t, gear, speed, flags) on change
 
-        self.state = self.WAIT_FEEDBACK if not self.skip_go else self.START_DELAY
+        self.state = self.WAIT_FEEDBACK
         self.state_t0 = time.monotonic()
         self.phase_idx = -1
         self.last_wait_log = 0.0
+        self.start_race_pulses = 0
         self.done = False
         self.timer = self.create_timer(1.0 / rate, self._tick)
         self.get_logger().info(
@@ -165,12 +171,36 @@ class ScenarioNode(Node):
         if self.state == self.WAIT_FEEDBACK:
             if self.feedback_alive():
                 self.get_logger().info(f"feedback OK: {self.fb_str()}")
-                self._enter(self.WAIT_GO)
+                self._enter(self.START_RACE)
             elif now - self.state_t0 > 10.0:
                 self.get_logger().warn(
                     "no /ac/vehicle_state feedback (relay/bridge/plugin up?). "
                     "Continuing without gear checks ...")
+                self._enter(self.START_RACE)
+            return
+
+        if self.state == self.START_RACE:
+            # Request the race start over the wire (GameControl.start_race;
+            # the bridge holds the bits ~0.5s then auto-clears - re-arming
+            # built in). Publish at ~2Hz; acknowledged when lights come on.
+            if self.skip_go or self.no_start_race or \
+                    (self.fb_flags & (FLAG_FEEDBACK_GO | FLAG_FEEDBACK_LIGHTS_ON)):
+                if self.start_race_pulses > 0:
+                    self.get_logger().info("race start acknowledged (lights on)")
                 self._enter(self.WAIT_GO)
+                return
+            if now - self.state_t0 > self.go_timeout:
+                self.get_logger().error(
+                    "race start not acknowledged. Is a RACE session loaded "
+                    "and the updated plugin (.hk) deployed?")
+                self._finish()
+                return
+            if int((now - self.state_t0) * 2) != self.start_race_pulses:
+                self.start_race_pulses = int((now - self.state_t0) * 2)
+                g = GameControl()
+                g.start_race = True
+                self.pub_game.publish(g)
+            self._wait_log(now, "requesting race start (game_cmd start_race)...")
             return
 
         if self.state == self.WAIT_GO:
@@ -208,7 +238,12 @@ class ScenarioNode(Node):
     def _enter(self, state):
         self.state = state
         self.state_t0 = time.monotonic()
-        if state == self.START_DELAY and self.start_delay > 0:
+        if state == self.START_RACE:
+            self.get_logger().info(
+                "START_RACE: requesting race start over the wire "
+                "(plugin calls Sim::startGame; skip with -p skip_go:=true "
+                "or -p no_start_race:=true)")
+        elif state == self.START_DELAY and self.start_delay > 0:
             self.get_logger().info(f"start delay {self.start_delay:.0f}s (stand by)")
         elif state == self.RUN:
             self.phase_idx += 1

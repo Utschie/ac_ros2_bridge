@@ -69,6 +69,20 @@ BTN_HANDBRAKE_ON = 0x10
 # flags bit: request takeover (maps to ac_ctrl::FLAG_OVERRIDE_ENABLED)
 FLAG_OVERRIDE = 0x01
 
+# GameControlPayload (ac/game_cmd): 4B action bits, edge-triggered by the
+# plugin; bridge holds them ~0.5s then auto-clears, so every put re-arms.
+GAME_CMD_FMT = "<I"
+GAME_CMD_SIZE = struct.calcsize(GAME_CMD_FMT)  # 4
+GAMECMD_START = 0x01
+GAMECMD_PAUSE = 0x02
+GAMECMD_RESUME = 0x04
+GAMECMD_RESTART = 0x08
+GAMECMD_SKIP = 0x10
+
+# GameStatePayload (ac/game_state): uint64 ts, uint32 sessionType, uint32 flags
+GAME_STATE_FMT = "<QII"
+GAME_STATE_SIZE = struct.calcsize(GAME_STATE_FMT)  # 16
+
 # VehicleStatePayload: uint64 timestampNs, int32 gear, float speed, uint32 flags (== 20 bytes)
 VSTATE_FMT = "<QifI"
 VSTATE_SIZE = struct.calcsize(VSTATE_FMT)  # 20
@@ -100,6 +114,27 @@ def encode_control(steering: float, throttle: float, brake: float, clutch: float
     flags = FLAG_OVERRIDE if override_enabled else 0
     return struct.pack(CONTROL_FMT, steering, throttle, brake, clutch, hand_brake,
                        requested_gear_index, buttons, flags)
+
+
+def encode_game_control(start_race: bool = False, pause: bool = False,
+                        resume: bool = False, restart_session: bool = False,
+                        skip_session: bool = False) -> bytes:
+    """Pack a GameControlPayload (4 bytes) for zenoh key 'ac/game_cmd'."""
+    action = (0
+              | (GAMECMD_START if start_race else 0)
+              | (GAMECMD_PAUSE if pause else 0)
+              | (GAMECMD_RESUME if resume else 0)
+              | (GAMECMD_RESTART if restart_session else 0)
+              | (GAMECMD_SKIP if skip_session else 0))
+    return struct.pack(GAME_CMD_FMT, action)
+
+
+def decode_game_state(data: bytes) -> dict:
+    """Decode a GameStatePayload (16 bytes) from zenoh key 'ac/game_state'."""
+    if len(data) < GAME_STATE_SIZE:
+        raise ValueError(f"game_state payload too short: {len(data)} < {GAME_STATE_SIZE}")
+    ts_ns, session_type, flags = struct.unpack(GAME_STATE_FMT, data[:GAME_STATE_SIZE])
+    return {"timestamp_ns": ts_ns, "session_type": session_type, "flags": flags}
 
 
 def decode_vehicle_state(data: bytes) -> dict:

@@ -31,7 +31,7 @@ post-mortem — see ac_ros2_bridge README "调试记录"):
 
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
-from ac_msgs.msg import VehicleControl, VehicleState
+from ac_msgs.msg import VehicleControl, VehicleState, GameControl, GameState
 
 from . import wire
 
@@ -46,7 +46,10 @@ class ControlRelay:
         cmd_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         self._sub_cmd = node.create_subscription(
             VehicleControl, "/ac/vehicle_cmd", self._on_cmd, cmd_qos)
+        self._sub_game = node.create_subscription(
+            GameControl, "/ac/game_cmd", self._on_game_cmd, cmd_qos)
         self._pub_state = node.create_publisher(VehicleState, "/ac/vehicle_state", 10)
+        self._pub_game_state = node.create_publisher(GameState, "/ac/game_state", 10)
 
         self._session = None
         self._cmd_count = 0
@@ -56,6 +59,7 @@ class ControlRelay:
     def attach(self, session) -> None:
         self._session = session
         session.declare_subscriber("ac/vehicle_state", self._on_state)
+        session.declare_subscriber("ac/game_state", self._on_game_state)
 
     # ---- ROS -> zenoh (rclpy executor thread; session.put is thread-safe) ----
 
@@ -90,6 +94,24 @@ class ControlRelay:
                 f"brk={msg.brake:.2f} gear={msg.requested_gear_index} "
                 f"override={'on' if msg.override_enabled else 'off'}")
 
+    # ---- ROS -> zenoh: game session control (GameControl, 4B) ----
+
+    def _on_game_cmd(self, msg: GameControl) -> None:
+        if self._session is None:
+            return
+        payload = wire.encode_game_control(
+            start_race=msg.start_race,
+            pause=msg.pause,
+            resume=msg.resume,
+            restart_session=msg.restart_session,
+            skip_session=msg.skip_session,
+        )
+        self._session.put("ac/game_cmd", payload)
+        self.ctx.log.info(
+            f"game_cmd -> zenoh  start={int(msg.start_race)} "
+            f"pause={int(msg.pause)} resume={int(msg.resume)} "
+            f"restart={int(msg.restart_session)} skip={int(msg.skip_session)}")
+
     # ---- zenoh -> ROS (zenoh callback thread -> publish under pub_lock) ----
 
     def _on_state(self, sample) -> None:
@@ -109,3 +131,17 @@ class ControlRelay:
         m.flags = v["flags"]
         with self.ctx.pub_lock:
             self._pub_state.publish(m)
+
+    def _on_game_state(self, sample) -> None:
+        try:
+            g = wire.decode_game_state(wire.payload_bytes(sample))
+        except Exception as ex:  # noqa: BLE001
+            self.ctx.log.warn(f"game_state decode failed: {ex}")
+            return
+        m = GameState()
+        m.header.stamp = self.ctx.now().to_msg()
+        m.session_type = g["session_type"]
+        m.race_live = (g["flags"] & 0x1) != 0
+        m.countdown_lights = (g["flags"] & 0x2) != 0
+        with self.ctx.pub_lock:
+            self._pub_game_state.publish(m)

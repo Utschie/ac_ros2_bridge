@@ -131,6 +131,24 @@ def main() -> None:
     c0 = wire.encode_control(0, 0, 0, 0, 0, wire.GEAR_NO_CHANGE)
     assert _s.unpack(wire.CONTROL_FMT, c0)[6:8] == (0, 0)
 
+    # game control: sizes + bit packing
+    assert wire.GAME_CMD_SIZE == 4, f"GAME_CMD_SIZE {wire.GAME_CMD_SIZE} != 4"
+    assert wire.GAME_STATE_SIZE == 16, f"GAME_STATE_SIZE {wire.GAME_STATE_SIZE} != 16"
+    g = wire.encode_game_control(start_race=True, skip_session=True)
+    assert _s.unpack(wire.GAME_CMD_FMT, g)[0] == (wire.GAMECMD_START | wire.GAMECMD_SKIP)
+    assert _s.unpack(wire.GAME_CMD_FMT,
+                     wire.encode_game_control())[0] == 0
+    gs = wire.decode_game_state(
+        _s.pack(wire.GAME_STATE_FMT, 111, 3, wire.FLAG_FEEDBACK_GO | 0x2))
+    assert gs["timestamp_ns"] == 111
+    assert gs["session_type"] == 3   # RACE
+    assert gs["flags"] == (wire.FLAG_FEEDBACK_GO | 0x2)
+    try:
+        wire.decode_game_state(b"\x00" * 8)
+        raise AssertionError("truncated game_state must raise")
+    except ValueError:
+        pass
+
     # vehicle_state round-trip: gear/speed/flags + GO bit convention
     v = wire.decode_vehicle_state(_s.pack(wire.VSTATE_FMT, 987654321, 2, 12.5,
                                           wire.FLAG_FEEDBACK_GO))
@@ -148,7 +166,8 @@ def main() -> None:
           f"DET_HDR_SIZE={wire.DET_HDR_SIZE} DET_SIZE={wire.DET_SIZE} "
           f"LIDAR_SIZE={wire.LIDAR_SIZE} LIDAR_HIT_SIZE={wire.LIDAR_HIT_SIZE} "
           f"IMAGE_SIZE={wire.IMAGE_SIZE} CONTROL_SIZE={wire.CONTROL_SIZE} "
-          f"VSTATE_SIZE={wire.VSTATE_SIZE} "
+          f"VSTATE_SIZE={wire.VSTATE_SIZE} GAME_CMD_SIZE={wire.GAME_CMD_SIZE} "
+          f"GAME_STATE_SIZE={wire.GAME_STATE_SIZE} "
           f"(matches shared/zenoh_payload.h + shared/lidar_shm.h)")
 
 

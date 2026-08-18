@@ -174,9 +174,14 @@ ros2 topic echo /ac/vehicle_state          # gear / speed / flags(bit0=GO)
 ros2 topic hz /ac/vehicle_state            # ~10Hz
 ```
 
-挡位/按钮语义、shm 与 vjoy 的 steering 语义差异、单 TCP 队头阻塞余量纪律：
+挡位/按钮语义、shm 与 vJoy 的 steering 语义差异、单 TCP 队头阻塞余量纪律：
 见 `ac_msgs/README.md` 与 `ac_sim_bridge/README.md`。联测验收项之一 =
 **重载（图像/雷达全开）下控制延迟观测**。
+
+**⚠ 测试前注意（AC 输入方式互斥，2026-08-18 实测）**：AC 输入方式为「方向盘」（vJoy）
+时键盘完全无效，反之亦然。bridge `MODE=shm`（推荐）时 AC 输入方式应切回「键盘」——
+弃权后键盘直接接管；`MODE=vjoy` 时 AC 须保持 vJoy 方向盘绑定，弃权后键盘开不了车。
+切 MODE 时记得同步切 AC 输入方式。
 
 ### 一键全命令回归（scenario_test）
 
