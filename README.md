@@ -197,6 +197,26 @@ ros2 run ac_ros2_bridge scenario --ros-args -p skip_go:=true      # 练习赛
 ros2 run ac_ros2_bridge scenario --ros-args -p throttle_scale:=0.5  # 油门刹车减半
 ```
 
+### Ackermann 输入（M5，留作模型使用者自实现）
+
+`/ac/vehicle_cmd` 是**底层执行器接口**（归一化油门/刹车/转向，无目标速度概念），
+规划/跟踪算法栈通常输出 `ackermann_msgs/AckermannDriveStamped`（`speed` m/s +
+`steering_angle` rad）。二者之间缺一层「速度 → 油门/刹车」闭环转换——**这层由具体
+使用自动驾驶模型的人按需实现**（不同模型的输出语义、车辆动力学、控制策略差异很大，
+不放进 relay 主链）。
+
+接入指引（想写一个自己的 converter 节点时照此做）：
+- **输入**：订阅 `/ac/ackermann_cmd`（`ackermann_msgs/AckermannDriveStamped`）；
+- **反馈**：订阅 `/ac/vehicle_state`（`ac_msgs/VehicleState`）拿当前车速做闭环；
+- **转换**（P 控制起步即可）：`e = target_speed - current_speed`，
+  `e>0 → throttle = clamp(speed_kp·e)`，`e<0 → brake = clamp(brake_kp·|e|)`；
+  `steering = steer_sign · angle / max_steer_angle`（夹到 [-1,1]）；
+- **发布**：`/ac/vehicle_cmd`（`ac_msgs/VehicleControl`，RELIABLE、定频 ≥20Hz，
+  **持续流式发送**——停发 ≈0.5s 自动弃权回人工）；
+- 挡位可发一次 `gear_up` 起步、或直接 `requested_gear_index`（0=R 1=N 2..8=1..7）；
+- **注意**：`VehicleState.speed` 单位未定案（疑似 m/s），闭环前先对照 HUD 定案；
+  仅 P 控制有超调/稳态误差，进阶可换 PID/纯跟踪模型（`pure_pursuit`/`mpc`）。
+
 ### 5. 排错速查
 
 | 症状 | 查什么 |
