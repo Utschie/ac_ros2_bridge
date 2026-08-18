@@ -93,6 +93,7 @@ class ScenarioNode(Node):
             self.declare_parameter(name, default)
         p = lambda n: self.get_parameter(n).value  # noqa: E731
         self.skip_go = bool(p("skip_go"))
+        self.no_start_race = bool(p("no_start_race"))
         self.go_timeout = float(p("go_timeout"))
         self.start_delay = float(p("start_delay"))
         self.scale = float(p("throttle_scale"))
