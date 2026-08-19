@@ -164,13 +164,15 @@ rviz2
 ```bash
 # 依赖消息包：工作区根 colcon build --packages-select ac_msgs ac_ros2_bridge
 # 开车（先按既有流程起 Windows bridge + AC；正赛会自动开赛，GO 后车才动）：
+# ⚠️ 必须显式写 requested_gear_index！不写 = 默认 0 = R 挡（倒车，实测踩坑）。
+#    要保持当前挡位发 -100，要起步发 2（1挡）。
 ros2 topic pub -r 50 /ac/vehicle_cmd ac_msgs/VehicleControl \
-  "{override_enabled: true, throttle: 0.2, steering: 0.0}"
+  "{override_enabled: true, throttle: 0.2, steering: 0.0, requested_gear_index: 2}"
 # 换挡（0=R 1=N 2..8=1..7；-100=不改）：
 ros2 topic pub -r 50 /ac/vehicle_cmd ac_msgs/VehicleControl \
-  "{override_enabled: true, throttle: 0.3, requested_gear_index: 2}"
+  "{override_enabled: true, throttle: 0.3, requested_gear_index: 3}"
 # 反馈：
-ros2 topic echo /ac/vehicle_state          # gear / speed / flags(bit0=GO)
+ros2 topic echo /ac/vehicle_state          # gear / speed(m/s) / flags(bit0=GO)
 ros2 topic hz /ac/vehicle_state            # ~10Hz
 ```
 
@@ -214,8 +216,9 @@ ros2 run ac_ros2_bridge scenario --ros-args -p throttle_scale:=0.5  # 油门刹�
 - **发布**：`/ac/vehicle_cmd`（`ac_msgs/VehicleControl`，RELIABLE、定频 ≥20Hz，
   **持续流式发送**——停发 ≈0.5s 自动弃权回人工）；
 - 挡位可发一次 `gear_up` 起步、或直接 `requested_gear_index`（0=R 1=N 2..8=1..7）；
-- **注意**：`VehicleState.speed` 单位未定案（疑似 m/s），闭环前先对照 HUD 定案；
-  仅 P 控制有超调/稳态误差，进阶可换 PID/纯跟踪模型（`pure_pursuit`/`mpc`）。
+- **注意**：`VehicleState.speed` 单位 **m/s**（实测定案），而 Ackermann 的
+  `speed` 也是 m/s，闭环可直接相减无需换算；仅 P 控制有超调/稳态误差，
+  进阶可换 PID/纯跟踪模型（`pure_pursuit`/`mpc`）。
 
 ### 5. 排错速查
 
@@ -368,4 +371,7 @@ ndarray 不是 `collections.abc.Sequence`）；而 **bytes/list 输入触发逐�
 - **/clock + use_sim_time**：relay 发布 /clock，届时只替换 RelayContext 的取时来源。
 - **统一帧号源**：gamehook_ac/optix 把场景帧号写进 image/lidar SHM → 严格帧对齐（当前
   ego↔dets 严格、ego↔lidar ≈1-2 帧、图像独立，见"帧对齐现状"）。
-- **控制下行**：订阅 ROS2 `/ac/vehicle_cmd` → Zenoh → Windows 桥写 `AC_ControlCache_v1`。
+- ~~**控制下行**~~：**已实现（M4）**——`/ac/vehicle_cmd`（VehicleControl）驾驶 + 
+  `/ac/game_cmd`（GameControl）会话控制（start/pause/resume/restart/skip）下行，
+  `/ac/vehicle_state` + `/ac/game_state` 反馈上行，见"控制下行（M4）"节。
+- **Ackermann 输入**：**留作模型使用者自实现**（见"控制下行"节的接入指引），不放进 relay。
