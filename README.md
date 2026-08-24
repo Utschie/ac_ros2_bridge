@@ -25,6 +25,7 @@ relay_context.py RelayContext：横切策略集中地——本地取时+ego-TF �
 scene_relay.py   SceneRelay：ego_pose / detections_3d / lidar 数据域
 image_relay.py   CameraRelay：相机图像数据域
 control_relay.py ControlRelay：控制下行（ROS→zenoh，首个反向模块）+ 状态反馈上行；
+                 v5 起含专家操作上行（zenoh ac/expert_ctrl → /ac/expert_ctrl）；
                  顶部注释含 uint8[] setter 禁用等编码铁律（调试记录教训）
 wire.py          纯负载编码/解码（+ payload_bytes），test_decode.py 守护；
                  v5 起含 ac/expert_ctrl 解码（44B：每场景帧的专家操作动作标签，
@@ -133,7 +134,7 @@ Linux 防火墙放行 7447（用 ufw 的话）：`sudo ufw allow 7447`。
    cd ~/ac_ws && source install/setup.bash
    ZENOH_CONFIG=~/relay.json5 ros2 run ac_ros2_bridge relay
    ```
-   预期日志：`[INFO] [ac_relay]: ac_relay ready: subscribing ac/ego_pose + ac/detections_3d + ac/lidar/*/points + ac/camera/** + ac/vehicle_state; forwarding /ac/vehicle_cmd -> zenoh ...`；收到相机数据后还会打 `image publisher '/ac/camera/<cam>/image_raw' (WxH rgba8)`。
+   预期日志：`[INFO] [ac_relay]: ac_relay ready: subscribing ac/ego_pose + ac/detections_3d + ac/lidar/*/points + ac/camera/** + ac/vehicle_state + ac/expert_ctrl; forwarding /ac/vehicle_cmd -> zenoh ...`；收到相机数据后还会打 `image publisher '/ac/camera/<cam>/image_raw' (WxH rgba8)`。
 
 ### 4. 验证（从简到繁，均已实测）
 
