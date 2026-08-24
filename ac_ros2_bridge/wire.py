@@ -91,6 +91,12 @@ VSTATE_SIZE = struct.calcsize(VSTATE_FMT)  # 20
 FLAG_FEEDBACK_GO = 0x01          # race start signal (lights out after countdown)
 FLAG_FEEDBACK_LIGHTS_ON = 0x02   # start lights currently on (countdown running)
 
+# ExpertCtrlPayload (ac/expert_ctrl, v5): uint64 ts, uint64 frameId,
+# 5x float (steer/throttle/brake/clutch/handBrake), uint32 gearPulses,
+# uint32 overrideActive (== 44 bytes)
+EXPERT_CTRL_FMT = "<QQfffffII"
+EXPERT_CTRL_SIZE = struct.calcsize(EXPERT_CTRL_FMT)  # 44
+
 # gear encoding (verified in-game): 0=R 1=N 2..8=1..7; sentinel below = leave as is
 GEAR_NO_CHANGE = -100
 
@@ -143,6 +149,32 @@ def decode_vehicle_state(data: bytes) -> dict:
         raise ValueError(f"vehicle_state payload too short: {len(data)} < {VSTATE_SIZE}")
     ts_ns, gear, speed, flags = struct.unpack(VSTATE_FMT, data[:VSTATE_SIZE])
     return {"timestamp_ns": ts_ns, "gear": gear, "speed": speed, "flags": flags}
+
+
+def decode_expert_ctrl(data: bytes) -> dict:
+    """Decode an ExpertCtrlPayload (44 bytes) from zenoh key 'ac/expert_ctrl'.
+
+    Frame-aligned imitation-learning action label: frame_id matches ego_pose /
+    detections samples. Values are the controls actually applied (native device
+    input while a human drives; override values with override_active=1 while
+    autonomy holds the car — training side should filter those).
+    """
+    if len(data) < EXPERT_CTRL_SIZE:
+        raise ValueError(f"expert_ctrl payload too short: {len(data)} < {EXPERT_CTRL_SIZE}")
+    (ts_ns, frame_id, steer, throttle, brake, clutch, hand_brake,
+     gear_pulses, override_active) = struct.unpack(EXPERT_CTRL_FMT, data[:EXPERT_CTRL_SIZE])
+    return {
+        "timestamp_ns": ts_ns,
+        "frame_id": frame_id,
+        "steer": steer,
+        "throttle": throttle,
+        "brake": brake,
+        "clutch": clutch,
+        "hand_brake": hand_brake,
+        "gear_up": bool(gear_pulses & 1),
+        "gear_dn": bool(gear_pulses & 2),
+        "override_active": override_active,
+    }
 
 
 def decode_ego(data: bytes) -> dict:

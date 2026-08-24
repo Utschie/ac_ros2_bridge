@@ -87,8 +87,8 @@ class AcRelay(Node):
         self._control.attach(self._session)
 
         self.get_logger().info("ac_relay ready: subscribing ac/ego_pose + ac/detections_3d "
-                               "+ ac/lidar/*/points + ac/camera/** + ac/vehicle_state; "
-                               "forwarding /ac/vehicle_cmd -> zenoh "
+                               "+ ac/lidar/*/points + ac/camera/** + ac/vehicle_state "
+                               "+ ac/expert_ctrl; forwarding /ac/vehicle_cmd -> zenoh "
                                "(AC->ROS axis remap in frames.py)")
 
     def close(self) -> None:

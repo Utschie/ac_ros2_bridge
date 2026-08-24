@@ -26,7 +26,9 @@ scene_relay.py   SceneRelay：ego_pose / detections_3d / lidar 数据域
 image_relay.py   CameraRelay：相机图像数据域
 control_relay.py ControlRelay：控制下行（ROS→zenoh，首个反向模块）+ 状态反馈上行；
                  顶部注释含 uint8[] setter 禁用等编码铁律（调试记录教训）
-wire.py          纯负载编码/解码（+ payload_bytes），test_decode.py 守护
+wire.py          纯负载编码/解码（+ payload_bytes），test_decode.py 守护；
+                 v5 起含 ac/expert_ctrl 解码（44B：每场景帧的专家操作动作标签，
+                 frameId 与 ego_pose 同源对齐——模仿学习数据）
 frames.py        AC→ROS 坐标转换（全部定案事实见其 docstring）
 ```
 
@@ -158,7 +160,10 @@ rviz2
 `/ac/vehicle_cmd`（`ac_msgs/VehicleControl`，**RELIABLE QoS、定频流式 ≥20Hz**）→ relay 打包
 32B `ControlPayload` → zenoh `ac/vehicle_cmd` → Windows bridge 按其 `bridge_control.ini`
 的 `MODE=shm|vjoy` 注入游戏（ROS 侧对后端无感知，切换方式只改 Windows 端 ini）。
-反向：zenoh `ac/vehicle_state` → `/ac/vehicle_state`（`ac_msgs/VehicleState`：挡位/车速/GO）。
+反向：zenoh `ac/vehicle_state` → `/ac/vehicle_state`（`ac_msgs/VehicleState`：挡位/车速/GO）；
+zenoh `ac/expert_ctrl` → `/ac/expert_ctrl`（`ac_msgs/ExpertCtrl`：每场景帧的专家操作动作
+标签——模仿学习 (观测,动作) 配对，frame_id 与 /ac/ego_pose 一致；override=true 表示
+自动驾驶接管值，训练时过滤）。
 **安全语义**：停止发布 ≈0.5s（bridge `RX_TIMEOUT_MS`）自动弃权回人工驾驶。
 
 ```bash
@@ -174,6 +179,9 @@ ros2 topic pub -r 50 /ac/vehicle_cmd ac_msgs/VehicleControl \
 # 反馈：
 ros2 topic echo /ac/vehicle_state          # gear / speed(m/s) / flags(bit0=GO)
 ros2 topic hz /ac/vehicle_state            # ~10Hz
+# 专家操作（模仿学习动作标签，与 /ac/ego_pose 同 frame_id 配对）：
+ros2 topic echo /ac/expert_ctrl            # steer/throttle/brake/... /frame_id
+ros2 topic hz /ac/expert_ctrl              # ~场景帧率（30-40Hz）
 ```
 
 挡位/按钮语义、shm 与 vJoy 的 steering 语义差异、单 TCP 队头阻塞余量纪律：

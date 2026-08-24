@@ -115,6 +115,15 @@ def main() -> None:
     assert wire.CONTROL_SIZE == 32, f"CONTROL_SIZE {wire.CONTROL_SIZE} != 32"
     assert wire.VSTATE_SIZE == 20, f"VSTATE_SIZE {wire.VSTATE_SIZE} != 20"
 
+    # expert_ctrl (v5 imitation learning): size + decode round-trip
+    assert wire.EXPERT_CTRL_SIZE == 44, f"EXPERT_CTRL_SIZE {wire.EXPERT_CTRL_SIZE} != 44"
+    import struct as _s2
+    _e = _s2.pack(wire.EXPERT_CTRL_FMT, 1234567890123, 777,
+                  -0.5, 0.8, 0.0, 0.1, 0.0, 3, 0)
+    _d = wire.decode_expert_ctrl(_e)
+    assert _d["frame_id"] == 777 and abs(_d["steer"] + 0.5) < 1e-6
+    assert _d["gear_up"] and _d["gear_dn"] and not _d["override_active"]
+
     # control round-trip: values + bool->buttons bit packing + flags
     c = wire.encode_control(steering=-0.25, throttle=0.3, brake=0.0, clutch=0.0,
                             hand_brake=0.0, requested_gear_index=2,   # 1st gear

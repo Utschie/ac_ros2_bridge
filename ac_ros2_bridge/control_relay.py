@@ -31,7 +31,7 @@ post-mortem — see ac_ros2_bridge README "调试记录"):
 
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
-from ac_msgs.msg import VehicleControl, VehicleState, GameControl, GameState
+from ac_msgs.msg import VehicleControl, VehicleState, GameControl, GameState, ExpertCtrl
 
 from . import wire
 
@@ -50,6 +50,9 @@ class ControlRelay:
             GameControl, "/ac/game_cmd", self._on_game_cmd, cmd_qos)
         self._pub_state = node.create_publisher(VehicleState, "/ac/vehicle_state", 10)
         self._pub_game_state = node.create_publisher(GameState, "/ac/game_state", 10)
+        # v5 模仿学习：专家操作逐帧上行（BEST_EFFORT 深度 50——每场景帧一条，
+        # 训练/录制消费方丢一两条无碍，不要求可靠传输）
+        self._pub_expert = node.create_publisher(ExpertCtrl, "/ac/expert_ctrl", 50)
 
         self._session = None
         self._cmd_count = 0
@@ -60,6 +63,7 @@ class ControlRelay:
         self._session = session
         session.declare_subscriber("ac/vehicle_state", self._on_state)
         session.declare_subscriber("ac/game_state", self._on_game_state)
+        session.declare_subscriber("ac/expert_ctrl", self._on_expert)
 
     # ---- ROS -> zenoh (rclpy executor thread; session.put is thread-safe) ----
 
@@ -145,3 +149,27 @@ class ControlRelay:
         m.countdown_lights = (g["flags"] & 0x2) != 0
         with self.ctx.pub_lock:
             self._pub_game_state.publish(m)
+
+    def _on_expert(self, sample) -> None:
+        # v5 模仿学习：每场景帧的专家操作（与 /ac/ego_pose 同 frame_id 配对）
+        try:
+            e = wire.decode_expert_ctrl(wire.payload_bytes(sample))
+        except Exception as ex:  # noqa: BLE001
+            self._bad_payload_logged += 1
+            if self._bad_payload_logged <= 5 or self._bad_payload_logged % 100 == 0:
+                self.ctx.log.warn(f"expert_ctrl decode failed ({ex}), "
+                                  f"count={self._bad_payload_logged}")
+            return
+        m = ExpertCtrl()
+        m.header.stamp = self.ctx.now().to_msg()
+        m.frame_id = e["frame_id"]
+        m.steer = e["steer"]
+        m.throttle = e["throttle"]
+        m.brake = e["brake"]
+        m.clutch = e["clutch"]
+        m.hand_brake = e["hand_brake"]
+        m.gear_up = e["gear_up"]
+        m.gear_dn = e["gear_dn"]
+        m.override = bool(e["override_active"])
+        with self.ctx.pub_lock:
+            self._pub_expert.publish(m)
