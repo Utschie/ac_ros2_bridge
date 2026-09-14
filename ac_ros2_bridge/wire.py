@@ -177,6 +177,174 @@ def decode_expert_ctrl(data: bytes) -> dict:
     }
 
 
+# ---- Telemetry (v1 2026-09-13): AC official acpmf shared memory passthrough ----
+# Layout mirrors shared/acpmf_shm.h (authoritative: ACTI sim_info_acti.py snapshot).
+# Physics is 145 contiguous 4-byte values (580B, no padding); graphics carries
+# UTF-16 strings with one 2-byte pad after tyreCompound; '<' struct prefix = no
+# auto-padding, so the pad bytes are explicit below.
+
+PHYS_FIELDS = [
+    ("packetId", "i"), ("gas", "f"), ("brake", "f"), ("fuel", "f"),
+    ("gear", "i"), ("rpms", "i"), ("steerAngle", "f"), ("speedKmh", "f"),
+    ("velocity", "3f"), ("accG", "3f"),
+    ("wheelSlip", "4f"), ("wheelLoad", "4f"), ("wheelsPressure", "4f"),
+    ("wheelAngularSpeed", "4f"), ("tyreWear", "4f"), ("tyreDirtyLevel", "4f"),
+    ("tyreCoreTemperature", "4f"), ("camberRAD", "4f"), ("suspensionTravel", "4f"),
+    ("drs", "f"), ("tc", "f"), ("heading", "f"), ("pitch", "f"), ("roll", "f"),
+    ("cgHeight", "f"), ("carDamage", "5f"),
+    ("numberOfTyresOut", "i"), ("pitLimiterOn", "i"),
+    ("abs", "f"), ("kersCharge", "f"), ("kersInput", "f"), ("autoShifterOn", "i"),
+    ("rideHeight", "2f"), ("turboBoost", "f"), ("ballast", "f"),
+    ("airDensity", "f"), ("airTemp", "f"), ("roadTemp", "f"),
+    ("localAngularVel", "3f"), ("finalFF", "f"), ("performanceMeter", "f"),
+    ("engineBrake", "i"), ("ersRecoveryLevel", "i"), ("ersPowerLevel", "i"),
+    ("ersHeatCharging", "i"), ("ersIsCharging", "i"), ("kersCurrentKJ", "f"),
+    ("drsAvailable", "i"), ("drsEnabled", "i"),
+    ("brakeTemp", "4f"), ("clutch", "f"),
+    ("tyreTempI", "4f"), ("tyreTempM", "4f"), ("tyreTempO", "4f"),
+    ("isAIControlled", "i"),
+    ("tyreContactPoint", "12f"), ("tyreContactNormal", "12f"),
+    ("tyreContactHeading", "12f"),
+    ("brakeBias", "f"), ("localVelocity", "3f"),
+]
+PHYS_FMT = "<" + "".join(code for _, code in PHYS_FIELDS)
+PHYS_SIZE = struct.calcsize(PHYS_FMT)      # 580
+
+INC_FIELDS = [
+    ("mz", "4f"), ("tyreLoadedRadius", "4f"), ("drivetrainSpeed", "f"),
+    ("aeroCD", "f"), ("aeroCLFront", "f"), ("aeroCLRear", "f"),
+    ("caster", "2f"), ("slipAngle", "4f"), ("slipRatio", "4f"),
+]
+INC_FMT = "<" + "".join(code for _, code in INC_FIELDS)
+INC_SIZE = struct.calcsize(INC_FMT)        # 88
+
+TELEMETRY_HDR_FMT = "<QQiI"                # ts, frameId, physPacketId, incValid
+TELEMETRY_HDR_SIZE = struct.calcsize(TELEMETRY_HDR_FMT)   # 24
+TELEMETRY_SIZE = TELEMETRY_HDR_SIZE + PHYS_SIZE + INC_SIZE   # 692
+
+GFX_FIELDS = [
+    ("packetId", "i"), ("status", "i"), ("session", "i"),
+    ("currentTime", "15H"), ("lastTime", "15H"), ("bestTime", "15H"),
+    ("split", "15H"),
+    ("completedLaps", "i"), ("position", "i"),
+    ("iCurrentTime", "i"), ("iLastTime", "i"), ("iBestTime", "i"),
+    ("sessionTimeLeft", "f"), ("distanceTraveled", "f"),
+    ("isInPit", "i"), ("currentSectorIndex", "i"), ("lastSectorTime", "i"),
+    ("numberOfLaps", "i"),
+    ("tyreCompound", "33H"),
+    ("_pad0", "2x"),                        # pack(4) padding after the 66B string
+    ("replayTimeMultiplier", "f"), ("normalizedCarPosition", "f"),
+    ("carCoordinates", "3f"), ("penaltyTime", "f"), ("flags", "i"),
+    ("idealLineOn", "i"), ("isInPitLane", "i"), ("surfaceGrip", "f"),
+    ("mandatoryPitDone", "i"), ("windSpeed", "f"), ("windDirection", "f"),
+]
+GFX_FMT = "<" + "".join(code for _, code in GFX_FIELDS)
+GFX_SIZE = struct.calcsize(GFX_FMT)        # 296
+
+TIMING_HDR_FMT = "<QQi"                    # ts, frameId, gfxPacketId
+TIMING_HDR_SIZE = struct.calcsize(TIMING_HDR_FMT)          # 20
+TIMING_SIZE = TIMING_HDR_SIZE + GFX_SIZE   # 316
+
+TELEM_STATIC_FMT = ("<II" "i" "ff" "i" "f" "4f4f" "f" "I" "ffff" "III" "III"
+                    "fff" "II" "ii" + "32s33s33s33s33s")
+TELEM_STATIC_SIZE = struct.calcsize(TELEM_STATIC_FMT)      # 300
+
+
+def _unpack_table(fmt: str, fields, blob: bytes):
+    """Unpack per declarative field table; multi-value codes become lists,
+    'nH' UTF-16 arrays become decoded strings, 'n x' pads are skipped."""
+    vals = struct.unpack_from(fmt, blob, 0)
+    out = {}
+    i = 0
+    for name, code in fields:
+        if "x" in code:
+            continue
+        n = int(code[:-1]) if len(code) > 1 else 1
+        chunk = vals[i:i + n]
+        i += n
+        if code.endswith("H"):
+            try:
+                out[name] = bytes(
+                    b for u in chunk for b in u.to_bytes(2, "little")
+                ).decode("utf-16-le").split("\x00", 1)[0]
+            except UnicodeDecodeError:
+                out[name] = ""
+        elif n == 1:
+            out[name] = chunk[0]
+        else:
+            out[name] = list(chunk)
+    return out
+
+
+def decode_telemetry(data: bytes) -> dict:
+    """Decode a TelemetryPayload (692B) from zenoh key 'ac/telemetry'.
+
+    Full AC official acpmf physics snapshot (per render frame; frame_id matches
+    ego_pose exactly) + CarPhysicsState increment block (valid when
+    inc_valid=1; Mz / loaded radii / drivetrain speed / aero / caster / slip).
+    """
+    if len(data) < TELEMETRY_SIZE:
+        raise ValueError(f"telemetry payload too short: {len(data)} < {TELEMETRY_SIZE}")
+    ts_ns, frame_id, phys_packet_id, inc_valid = struct.unpack_from(
+        TELEMETRY_HDR_FMT, data, 0)
+    phys = _unpack_table(PHYS_FMT, PHYS_FIELDS, data[TELEMETRY_HDR_SIZE:])
+    inc = _unpack_table(INC_FMT, INC_FIELDS,
+                        data[TELEMETRY_HDR_SIZE + PHYS_SIZE:])
+    inc = {("inc_" + k): v for k, v in inc.items()}
+    out = {"timestamp_ns": ts_ns, "frame_id": frame_id,
+           "phys_packet_id": phys_packet_id, "inc_valid": inc_valid}
+    out.update(phys)
+    out.update(inc)
+    return out
+
+
+def decode_timing(data: bytes) -> dict:
+    """Decode a TimingPayload (316B) from zenoh key 'ac/timing'.
+
+    SPageFileGraphic passthrough (lap times / sectors / position / flags /
+    weather). wchar timing strings are decoded; numeric ms fields carry the
+    same information for precise use.
+    """
+    if len(data) < TIMING_SIZE:
+        raise ValueError(f"timing payload too short: {len(data)} < {TIMING_SIZE}")
+    ts_ns, frame_id, gfx_packet_id = struct.unpack_from(TIMING_HDR_FMT, data, 0)
+    gfx = _unpack_table(GFX_FMT, GFX_FIELDS, data[TIMING_HDR_SIZE:])
+    out = {"timestamp_ns": ts_ns, "frame_id": frame_id,
+           "gfx_packet_id": gfx_packet_id}
+    out.update(gfx)
+    return out
+
+
+def decode_telemetry_static(data: bytes) -> dict:
+    """Decode a TelemetryStaticPayload (300B) from 'ac/telemetry_static'.
+
+    Published only when the acpmf static session epoch changes (car / track /
+    constants snapshot). Same content lands in the session dump's
+    telemetry_static.jsonl on the Windows side.
+    """
+    if len(data) < TELEM_STATIC_SIZE:
+        raise ValueError(
+            f"telemetry_static payload too short: {len(data)} < {TELEM_STATIC_SIZE}")
+    v = struct.unpack(TELEM_STATIC_FMT, data[:TELEM_STATIC_SIZE])
+    names_num = ["sessionEpoch", "numCars", "sectorCount", "maxTorque", "maxPower",
+                 "maxRpm", "maxFuel"]
+    out = {n: x for n, x in zip(names_num, v[:7])}
+    out["suspensionMaxTravel"] = list(v[7:11])
+    out["tyreRadius"] = list(v[11:15])
+    rest = v[15:]
+    num_rest = ["maxTurboBoost", "penaltiesEnabled", "aidFuelRate", "aidTireRate",
+                "aidMechanicalDamage", "aidStability", "aidAllowTyreBlankets",
+                "aidAutoClutch", "aidAutoBlip", "hasDRS", "hasERS", "hasKERS",
+                "kersMaxJ", "ersMaxJ", "trackSPlineLength", "isTimedRace",
+                "hasExtraLap", "pitWindowStart", "pitWindowEnd"]
+    for n, x in zip(num_rest, rest[:19]):
+        out[n] = x
+    for n, b in zip(["acVersion", "track", "trackConfig", "carModel", "carSkin"],
+                    rest[19:24]):
+        out[n] = b.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+    return out
+
+
 def decode_ego(data: bytes) -> dict:
     """Decode an EgoPosePayload (80 bytes). 'world' is the 16-float row-major 4x4."""
     if len(data) < EGO_SIZE:
