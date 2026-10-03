@@ -139,9 +139,16 @@ Linux 防火墙放行 7447（用 ufw 的话）：`sudo ufw allow 7447`。
 3. **Linux：跑中继**：
    ```bash
    cd ~/ac_ws && source install/setup.bash
-   ZENOH_CONFIG=~/relay.json5 ros2 run ac_ros2_bridge relay
+   export ZENOH_CONFIG=$HOME/relay.json5
+   ros2 run ac_ros2_bridge relay
    ```
-   预期日志：`[INFO] [ac_relay]: ac_relay ready: subscribing ac/ego_pose + ac/detections_3d + ac/lidar/*/points + ac/camera/** + ac/vehicle_state + ac/expert_ctrl; forwarding /ac/vehicle_cmd -> zenoh ...`；收到相机数据后还会打 `image publisher '/ac/camera/<cam>/image_raw' (WxH rgba8)`。
+   ⚠️ **固定用 export 这一种写法**（2026-10-03 排障定案）：bash 里
+   `ZENOH_CONFIG=~/relay.json5` **单独一行**是不导出的赋值，下一行的
+   `ros2 run` 子进程拿不到；`VAR=x cmd` 单行前缀虽有效但容易被拆成两行误用
+   （Windows cmd 的 `set` 是窗口级持久，习惯不能平移）。配置没加载时 relay
+   以 zenoh 默认 **client 模式静默空跑**——不监听 7447（`listen` 字段的默认值
+   是幌子，client 模式不用它），bridge 连不进、无任何数据、无任何报错。
+   预期日志：`[INFO] [ac_relay]: ac_relay ready: subscribing ac/ego_pose + ac/detections_3d + ac/lidar/*/points + ac/camera/** + ac/vehicle_state + ac/expert_ctrl + ac/semantic/classes; forwarding /ac/vehicle_cmd -> zenoh ...`；收到相机数据后还会打 `image publisher '/ac/camera/<cam>/image_raw' (WxH rgba8)`。
 
 ### 4. 验证（从简到繁，均已实测）
 
@@ -242,6 +249,7 @@ ros2 run ac_ros2_bridge scenario --ros-args -p throttle_scale:=0.5  # 油门刹�
 | 症状 | 查什么 |
 |---|---|
 | relay 起来了但 topic 无数据 | ① Windows 窗口里 `echo %ZENOH_CONFIG%` 确认生效；② `LINUX_IP` 写对没；③ Linux 防火墙 7447；④ 两边配置 `mode` 都须 `"peer"` |
+| relay 无任何数据且 Linux `ss -tlnp \| grep 7447` 无监听 | **ZENOH_CONFIG 未生效**：分两行赋值不导出（bash 陷阱）→ relay 以 zenoh 默认 client 模式静默空跑不监听。用 `export ZENOH_CONFIG=$HOME/relay.json5` 绝对路径重启（见"按顺序启动"第 3 步说明） |
 | RViz 无 Marker | 确认加的是 **MarkerArray** 显示类型、话题 `/ac/detections_3d_markers` |
 | `ModuleNotFoundError: zenoh` | `pip install zenoh`，并确认装到了跑 ros2 的那个 Python |
 | Detection3DArray 显示类型不存在 | 装 `ros-$ROS_DISTRO-vision-msgs-rviz-plugins`，或改用 MarkerArray |
