@@ -53,8 +53,6 @@ ENCODING_TO_ROS = {
     3: "mono8",    # ENC_MONO8
 }
 
-CLASS_CAR = 1
-
 # ControlPayload: float steering/throttle/brake/clutch/handBrake,
 #                 int32 requestedGearIndex, uint32 buttons, uint32 flags (== 32 bytes)
 CONTROL_FMT = "<5fiII"

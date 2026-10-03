@@ -29,6 +29,8 @@ from collections import deque
 
 from tf2_ros import TransformBroadcaster, StaticTransformBroadcaster
 
+from .class_table import builtin_classes
+
 # Max wait for the same-frame ego before falling back to the clamped stamp.
 PAIR_TIMEOUT_S = 0.5
 # Pairing map size (~10s @ 50Hz of ego frames).
@@ -64,6 +66,11 @@ class RelayContext:
 
         # Cross-domain caches.
         self.last_ego_world = None   # 16-float AC BODYTR world matrix
+        # M3: semantic class vocabulary (id -> name/color/dynamic/exclude),
+        # fed by SemanticClassRelay from zenoh ac/semantic/classes and swapped
+        # whole-object on update (readers never see a torn table). Bootstrap =
+        # built-in 11 classes until the first valid sample arrives.
+        self.semantic_classes = builtin_classes()
 
     def close(self):
         try:

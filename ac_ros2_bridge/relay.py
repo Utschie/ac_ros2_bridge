@@ -63,6 +63,7 @@ from .relay_context import RelayContext
 from .scene_relay import SceneRelay
 from .image_relay import CameraRelay
 from .control_relay import ControlRelay
+from .class_table import SemanticClassRelay
 
 
 class AcRelay(Node):
@@ -79,16 +80,21 @@ class AcRelay(Node):
         self._ctx = RelayContext(self)
 
         # Domain modules (subscribe in attach(); publish their own topics).
+        # SemanticClassRelay first: it feeds ctx.semantic_classes, the
+        # vocabulary detections_3d class names / marker colors resolve through.
+        self._semcls = SemanticClassRelay(self._ctx)
         self._scene = SceneRelay(self._ctx)
         self._image = CameraRelay(self._ctx)
         self._control = ControlRelay(self._ctx)
+        self._semcls.attach(self._session)
         self._scene.attach(self._session)
         self._image.attach(self._session)
         self._control.attach(self._session)
 
         self.get_logger().info("ac_relay ready: subscribing ac/ego_pose + ac/detections_3d "
                                "+ ac/lidar/*/points + ac/camera/** + ac/vehicle_state "
-                               "+ ac/expert_ctrl; forwarding /ac/vehicle_cmd -> zenoh "
+                               "+ ac/expert_ctrl + ac/semantic/classes; forwarding "
+                               "/ac/vehicle_cmd -> zenoh "
                                "(AC->ROS axis remap in frames.py)")
 
     def close(self) -> None:

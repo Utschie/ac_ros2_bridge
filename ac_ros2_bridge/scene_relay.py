@@ -160,12 +160,16 @@ class SceneRelay:
             d3.bbox.size.z = sz
             # vision_msgs ObjectHypothesisWithPose differs by ROS2 distro:
             #   Humble -> flat {id, score};  Jazzy/Iron+ -> nested {hypothesis.{class_id,score}}
+            # M3: the id field carries the CLASS NAME from ctx.semantic_classes
+            # (zenoh ac/semantic/classes; custom classes included) - it was a
+            # bare numeric string before, unexplainable to consumers.
             hyp = ObjectHypothesisWithPose()
+            class_name = self.ctx.semantic_classes.name_of(det["class_id"])
             if hasattr(hyp, "hypothesis"):
-                hyp.hypothesis.class_id = str(det["class_id"])
+                hyp.hypothesis.class_id = class_name
                 hyp.hypothesis.score = float(det["score"])
             else:
-                hyp.id = str(det["class_id"])
+                hyp.id = class_name
                 hyp.score = float(det["score"])
             d3.results.append(hyp)
             arr.detections.append(d3)
@@ -186,9 +190,16 @@ class SceneRelay:
             mk.scale.x = sx
             mk.scale.y = sy
             mk.scale.z = sz
-            mk.color.r = 0.2
-            mk.color.g = 0.9
-            mk.color.b = 0.2
+            # M3: marker color = the class color (same table the semantic
+            # image bakes into its pixels). UNKNOWN's class color is white -
+            # invisible on RViz2's light background - so it keeps the legacy
+            # green instead.
+            r, g, b = self.ctx.semantic_classes.color_of(det["class_id"])
+            if class_name == "UNKNOWN":
+                r, g, b = 0.2, 0.9, 0.2
+            mk.color.r = r
+            mk.color.g = g
+            mk.color.b = b
             mk.color.a = 0.35
             mk.lifetime.nanosec = MARKER_LIFETIME_NS
             markers.markers.append(mk)

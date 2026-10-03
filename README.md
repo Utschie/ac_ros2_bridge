@@ -5,10 +5,12 @@ AC 仿真 ↔ ROS2 中继（Linux 端）。订阅 Windows 上 `ac_sim_bridge` �
 
 > 当前状态：**ego_pose / detections_3d / 雷达点云 / 相机图像全部端到端实测通过且流畅**（Humble +
 > peer 直连；雷达 10Hz + 图像同传，2026-08 setter 悬案结案后实测，见下方"调试记录"）。
-> 订阅 `ac/ego_pose` + `ac/detections_3d` + `ac/lidar/*/points` + `ac/camera/**`，
+> 订阅 `ac/ego_pose` + `ac/detections_3d` + `ac/lidar/*/points` + `ac/camera/**` +
+> `ac/semantic/classes`（M3 类表），
 > 发 `/ac/ego_pose`(`PoseStamped`) + TF(`ac_world→base_link`) + `/ac/detections_3d`(`Detection3DArray`)
 > + `/ac/detections_3d_markers`(`MarkerArray` 保底) + `/ac/lidar/<name>/points`(`PointCloud2`)
-> + `/ac/camera/<cam>/<suffix>`(`Image`) + TF(`base_link→<name>_frame` 静态)。
+> + `/ac/camera/<cam>/<suffix>`(`Image`) + TF(`base_link→<name>_frame` 静态)
+> + `/ac/semantic/classes`(M3，`std_msgs/String` latched)。
 > **AC→ROS 坐标转换全部集中在 [frames.py](ac_ros2_bridge/frames.py)**
 > （4 个实测定案事实见其 docstring，C++ 侧对应 shared/ac_coords.h）。
 > **带宽**：链路实测 ≈86MB/s（iperf 687Mbps，v4/v6 均稳）；zenoh 单 TCP 共用，总量留余量为宜
@@ -22,8 +24,13 @@ relay.py         入口/组装：节点引导 + zenoh session + 各域接线
 relay_context.py RelayContext：横切策略集中地——本地取时+ego-TF 钳制、帧精确配对、
                  发布锁（zenoh 线程安全）、动态 TF + /tf_static 全集 latch。
                  未来 /clock + use_sim_time 只改这里的取时来源。
-scene_relay.py   SceneRelay：ego_pose / detections_3d / lidar 数据域
+scene_relay.py   SceneRelay：ego_pose / detections_3d / lidar 数据域；detections 的
+                 类名/Marker 色查 ctx.semantic_classes（M3）
 image_relay.py   CameraRelay：相机图像数据域
+class_table.py   SemanticClassRelay（M3）：语义类词汇表域——zenoh ac/semantic/classes
+                 （JSON 文本）→ ctx.semantic_classes + latched /ac/semantic/classes；
+                 纯逻辑半区（parse_class_table/builtin_classes）不 import ROS，
+                 test_class_table.py 任意 OS 可离线跑
 control_relay.py ControlRelay：控制下行（ROS→zenoh，首个反向模块）+ 状态反馈上行；
                  v5 起含专家操作上行（zenoh ac/expert_ctrl → /ac/expert_ctrl）；
                  顶部注释含 uint8[] setter 禁用等编码铁律（调试记录教训）
@@ -151,7 +158,8 @@ rviz2
 - Fixed Frame 设 `ac_world`。
 - Add → **TF**（`base_link` 随车移动）。
 - Add → **Pose**，话题 `/ac/ego_pose`。
-- Add → **MarkerArray**，话题 `/ac/detections_3d_markers`（内置显示，绿色半透明 OBB）。
+- Add → **MarkerArray**，话题 `/ac/detections_3d_markers`（内置显示，OBB 按**类色**半透明，
+  M3 起与语义图同色；UNKNOWN 保持绿色）。
 - 或 Add → **Detection3DArray**，话题 `/ac/detections_3d`（需装 `vision-msgs-rviz-plugins`）。
 
 开车 → 车移动 + 周围车 3D OBB 跟随 = 全链路（AC → gamehook 插件 → SHM → ac_sim_bridge → Zenoh → relay → ROS2 → RViz）打通。
@@ -299,6 +307,39 @@ RViz2：Fixed Frame `ac_world` → Add → **Image** → 话题 `/ac/camera/fron
 **通道序检查**：游戏里红色的车在 Image 显示里也应是红色（若红蓝互换 = BGRA/RGBA 映射错，
 报给 bridge 侧改 encOf）。深度/语义图同法（`image_depth` 显示为 32FC1 灰度浮点，
 RViz2 Image 显示会自动归一化）。
+
+## 语义类词汇表（M3，2026-10-03）
+
+M3 起类表用户可编辑（Windows 侧 `configs\classes.json`：自定义类、数组顺序=类 ID、颜色
+`#RRGGBB`），且检测的 `classId` 从写死 1 改为透传节点真实 `semanticClass`。本侧（Linux）
+靠 zenoh 拿到同一张表来解释这些 ID 和语义图颜色——**否则自定义类在 ROS 侧不可辨识**。
+
+**链路**：ac_sim_bridge（读 classes.json，1Hz mtime 热重载）→ zenoh `ac/semantic/classes`
+（载荷 = `semcls::tableToJson` 规范 JSON 文本，唯一一个非二进制 key；启动 + 表变化 +
+每 2s 保活重发）→ 本侧 `class_table.py`（`SemanticClassRelay`）→
+`ctx.semantic_classes`（整对象热换）+ latched 话题 `/ac/semantic/classes`
+（`std_msgs/String` 装原始 JSON，TRANSIENT_LOCAL——晚加入的节点立即拿到最新表）。
+
+**消费点**：
+- `/ac/detections_3d` 的 `ObjectHypothesis.id`/`class_id` = **类名字符串**（"CAR"/"CONE"；
+  ⚠️ **接口变更**：2026-10-03 前是裸数字字符串如 "1"，下游若有按数字解析的脚本需同步改）；
+- `/ac/detections_3d_markers` 颜色 = 类色（与语义图像素同源；UNKNOWN 类色是白色，
+  浅背景下不可见，沿用旧绿色）。
+
+**回退铁律**（与 Windows 五端一致，见 `shared/semantic_class_config.h`）：首个有效样本前用
+内置 11 类兜底（出厂表的内置前缀与之间 ID 对齐）；任何非法样本（坏 JSON / 首项非 UNKNOWN /
+重名 / 超 64 类 / 坏色）**保留最后成功的表**继续工作 + WARN，不闪变。类 ID 重排的过渡窗口
+（表已换、SHM 残留旧 ID）越界回退 "UNKNOWN"，1-2s 自愈。改 classes.json 后约 1-2s 全链热生效
+（bridge mtime 轮询 + 本侧查表即查即用）。
+
+### 验证
+
+```bash
+ros2 topic echo /ac/semantic/classes --once   # JSON 文本（12 类含 CONE，颜色 #RRGGBB）
+ros2 topic echo /ac/detections_3d --field detections[0].results[0]   # 类名而非数字
+```
+热重载：改 Windows 侧 classes.json（如改 CONE 颜色/重命名）→ 1-2s 内上方两处随之变化，
+Marker/语义图颜色同步。离线自测（任意 OS）：`python ac_ros2_bridge/test_class_table.py`。
 
 ## 踩坑记录（按发现顺序；详细机理见上文对应小节）
 
