@@ -300,7 +300,8 @@ zenoh DROP 拥塞控制兜底，relay→RViz2 是本地回环、RELIABLE 无代�
 **带宽更正（2026-08）**：早前实测的"拥塞崩溃曲线"（20Hz→实收 0.6Hz 等）测于 relay 的
 uint8[] setter bug 时期（见"调试记录"），瓶颈是接收端 Python 逐元素循环而非链路——iperf 实证
 链路 ≈86MB/s。setter 修复后高频图像值得重测真实上限；zenoh 单 TCP 队头阻塞的原理性风险仍在，
-联测仍建议按需配置相机/频率（`AC_BRIDGE_IMAGE_HZ` env 可快速覆盖）。
+联测仍建议按需配置相机/频率（改 `bridge_images.ini` 各 `[CAMERA_*]` 的 HZ；20261010.17
+起桥不读任何环境变量，原 `AC_BRIDGE_IMAGE_HZ` 快速覆盖已退役）。
 
 ### 验证
 
