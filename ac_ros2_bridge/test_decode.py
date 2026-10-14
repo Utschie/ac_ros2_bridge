@@ -111,6 +111,65 @@ def main() -> None:
     assert wire.ENCODING_TO_ROS[2] == "32FC1"
     assert wire.ENCODING_TO_ROS[3] == "mono8"
 
+    # M2 compressed wire (2026-10-14 adaptation): enums + lz4 round-trips
+    assert wire.MODE_RAW == 0 and wire.MODE_COMPRESSED == 1
+    assert wire.ENC_JPEG == 5 and wire.ENC_DEPTH16 == 6
+    assert abs(wire.DEPTH16_DSCALE - 327.675) < 1e-9
+    try:
+        import lz4.block  # pip install lz4
+        have_lz4 = True
+    except ImportError:
+        have_lz4 = False
+    if have_lz4:
+        import numpy as np
+        # depth frame: 2x2 metric u16 pixels, LZ4 block behind the 32B header
+        px = struct.pack("<4H", 0, 32768, 65535, 1234)
+        blob = lz4.block.compress(px, store_size=False)   # raw block, as on wire
+        imc = wire.decode_image(struct.pack(
+            "<QQIIHHI", 555, 9, 2, 2, wire.ENC_DEPTH16,
+            wire.MODE_COMPRESSED, len(blob)) + blob)
+        assert imc["encoding"] == wire.ENC_DEPTH16
+        assert imc["mode"] == wire.MODE_COMPRESSED
+        raw = wire.decompress_lz4(imc["data"], 2 * 2 * 2)
+        m = np.frombuffer(raw, dtype="<u2")
+        assert list(m) == [0, 32768, 65535, 1234]
+        meters = (m.astype(np.float64) / wire.DEPTH16_DSCALE).astype(np.float32)
+        assert abs(meters[0]) < 1e-6                    # 0 m
+        assert abs(meters[1] - 100.0021) < 1e-3         # 32768 -> ~100 m
+        assert abs(meters[2] - 200.0) < 1e-3           # 65535 -> exactly 200 m (sky)
+        # semantic frame: 4 class-id bytes
+        sblob = lz4.block.compress(bytes([0, 1, 2, 63]), store_size=False)
+        ims = wire.decode_image(struct.pack(
+            "<QQIIHHI", 556, 10, 4, 1, 3,
+            wire.MODE_COMPRESSED, len(sblob)) + sblob)
+        assert wire.decompress_lz4(ims["data"], 4) == bytes([0, 1, 2, 63])
+        # wrong uncompressed size must fail loud
+        try:
+            wire.decompress_lz4(ims["data"], 5)
+            raise AssertionError("lz4 size mismatch must raise")
+        except ValueError:
+            pass
+        # jpeg frame: data is a whole-codec slice (magic check only)
+        imj = wire.decode_image(struct.pack(
+            "<QQIIHHI", 557, 11, 8, 6, wire.ENC_JPEG,
+            wire.MODE_COMPRESSED, 2) + b"\xFF\xD8")
+        assert imj["data"] == b"\xFF\xD8"
+    else:
+        print("note: python-lz4 not installed, lz4 round-trips skipped")
+
+    # camera_info: size + decode round-trip (52B CameraInfoPayload)
+    assert wire.CAMINFO_SIZE == 52, f"CAMINFO_SIZE {wire.CAMINFO_SIZE} != 52"
+    ci = wire.decode_camera_info(struct.pack(
+        wire.CAMINFO_FMT, b"front".ljust(32, b"\x00"), 1280, 720, 70.0, 0.1, 200.0))
+    assert ci["name"] == "front" and ci["width"] == 1280 and ci["height"] == 720
+    assert abs(ci["fov_deg"] - 70.0) < 1e-6
+    assert abs(ci["near"] - 0.1) < 1e-6 and abs(ci["far"] - 200.0) < 1e-6
+    try:
+        wire.decode_camera_info(b"\x00" * 8)
+        raise AssertionError("truncated camera_info must raise")
+    except ValueError:
+        pass
+
     # control: sizes must match shared/zenoh_payload.h (ControlPayload 32B)
     assert wire.CONTROL_SIZE == 32, f"CONTROL_SIZE {wire.CONTROL_SIZE} != 32"
     assert wire.VSTATE_SIZE == 20, f"VSTATE_SIZE {wire.VSTATE_SIZE} != 20"

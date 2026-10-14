@@ -86,6 +86,7 @@ frames.py        AC→ROS 坐标转换（全部定案事实见其 docstring）
 
 - **ROS2 Humble 或 Jazzy**（两者皆可；中继走 zenoh-python 直连、非 rmw_zenoh，故发行版灵活。含 `rclpy`、`geometry_msgs`、`vision_msgs`、`visualization_msgs`、`tf2_ros`。vision_msgs 字段差异已自动兼容）。
 - **zenoh-python 1.x**：`pip install zenoh`（非 ROS 包，pip 装）。
+- **python-lz4**：`pip install lz4`（depth/semantic 压缩帧解压；非 ROS 包，pip 装）。
 - **RViz 的 Detection3DArray 显示插件**（可选，`/ac/detections_3d` 原生显示）：
   ```bash
   sudo apt install ros-$ROS_DISTRO-vision-msgs-rviz-plugins
@@ -284,38 +285,52 @@ RViz：Add → **PointCloud2**，话题 `/ac/lidar/<name>/points`，Fixed Frame 
 > 带宽提示：vis 模式每帧全速扫描（4 雷达 ≈ 数百 MB/s）。跨机测试建议 `custom_lidars.ini` 少开雷达，
 > 或 ac_optix_renderer 用 `--real-hz` 按真实 Hz 限频。
 
-## 相机图像（M2）
+## 相机图像（M2；2026-10-14 压缩 wire 适配）
 
-relay 订阅 `ac/camera/**`，把 `ac/camera/<cam>/<suffix>` 原样转成 ROS 话题
-`/ac/camera/<cam>/<suffix>`（`sensor_msgs/Image`，**Reliable QoS（depth 5）**——RViz2 的
-Image 显示默认 RELIABLE 订阅，发布器用 BEST_EFFORT 会被 DDS 拒绝配对；跨机丢帧由 Windows 端
-zenoh DROP 拥塞控制兜底，relay→RViz2 是本地回环、RELIABLE 无代价）。像素字节直通不转 copy
-（同点云做法），编码映射见 [wire.py](ac_ros2_bridge/wire.py)
-的 `ENCODING_TO_ROS`：RGBA8/BGRA8/32FC1(R32F 深度)/mono8。`image_classes`（语义图）当前载荷
-为 **RGBA8 彩色语义图**（生产端如此，mono8 class-id 为未来项）。`frame_id = <cam>_frame`
-（相机 TF 属后续阶段；Image 显示不查 TF，不影响显示）。
+relay 订阅 `ac/camera/**`。**M2 起三模态全部为压缩帧**（游戏内编码、桥透传；
+32B 头 `<QQIIHHI` 不变），Linux 端按下表中继：
+
+| zenoh suffix | wire（enc/mode） | ROS 话题 | 消息/处理 |
+|---|---|---|---|
+| `image_raw` | 5 / 1 = 整段 JPEG（nvJPEG q90、4:2:0） | `/ac/camera/<cam>/image_raw/compressed` | `sensor_msgs/CompressedImage`（format="jpeg"）**零解码透传** |
+| `image_depth` | 6 / 1 = LZ4 × 米制 u16 LE | `/ac/camera/<cam>/image_depth` | LZ4 解压 → **`Image` 32FC1 米制**（米 = u16/327.675；65535 精确解码为 200.0m = 天空/满量程） |
+| `image_classes` | 3 / 1 = LZ4 × u8 类别 ID | `/ac/camera/<cam>/image_classes` | LZ4 解压 → **`Image` mono8**（像素 = 类别 ID；类名/颜色查 `/ac/semantic/classes`，数组序即 ID；ID 超出词表按 UNKNOWN 处理） |
+| `camera_info` | 52B CameraInfoPayload | `/ac/camera/<cam>/camera_info` | `sensor_msgs/CameraInfo`（K 由 fovDeg 算 Pinhole，TRANSIENT_LOCAL latched） |
+
+解码细节见 [wire.py](ac_ros2_bridge/wire.py)（`decompress_lz4` fail-loud：解压结果
+必须精确等于 w×h×2 / w×h）。旧 MODE_RAW 裸像素帧（enc 0-3）仍按原路中继（兼容）。
+**QoS**：Image/CompressedImage = Reliable depth 5（RViz2 默认 RELIABLE 订阅，
+BEST_EFFORT 发布会被 DDS 拒绝配对）；camera_info = Reliable + TRANSIENT_LOCAL
+（迟到订阅者即刻拿到）。`frame_id = <cam>_frame`（相机 TF 属后续阶段；Image 显示
+不查 TF，不影响显示）。
 
 前置（Windows 侧）：AC 带 gamehook_ac + `custom_cameras.ini`；ac_sim_bridge 用
-`bridge_images.ini`（per-camera 分段，见其 README）决定转发哪些相机/模态/频率。
+`streamer.ini`（per-camera 分段，见其 README；M5 前名 bridge_images.ini）决定
+转发哪些相机/模态/频率。
 **带宽更正（2026-08）**：早前实测的"拥塞崩溃曲线"（20Hz→实收 0.6Hz 等）测于 relay 的
 uint8[] setter bug 时期（见"调试记录"），瓶颈是接收端 Python 逐元素循环而非链路——iperf 实证
 链路 ≈86MB/s。setter 修复后高频图像值得重测真实上限；zenoh 单 TCP 队头阻塞的原理性风险仍在，
-联测仍建议按需配置相机/频率（改 `bridge_images.ini` 各 `[CAMERA_*]` 的 HZ；20261010.17
+联测仍建议按需配置相机/频率（改 `streamer.ini` 各 `[CAMERA_*]` 的 HZ；20261010.17
 起桥不读任何环境变量，原 `AC_BRIDGE_IMAGE_HZ` 快速覆盖已退役）。
 
 ### 验证
 
 ```bash
-ros2 topic list                      # 应有 /ac/camera/front/image_raw 等
-ros2 topic hz /ac/camera/front/image_raw        # ≈配置的 HZ（WiFi 联测建议 2）
-ros2 topic echo /ac/camera/front/image_raw --field encoding   # rgba8（或 bgra8）
-ros2 topic echo /ac/camera/front/image_raw --field width --once  # 1365（保比例裁剪）
+ros2 topic list                      # 应有 image_raw/compressed、image_depth、image_classes、camera_info
+ros2 topic hz /ac/camera/front/image_depth          # ≈配置的 HZ
+ros2 topic echo /ac/camera/front/image_depth --field encoding --once   # 32FC1
+ros2 topic echo /ac/camera/front/camera_info --field k --once          # 9 个内参
 ```
 
-RViz2：Fixed Frame `ac_world` → Add → **Image** → 话题 `/ac/camera/front/image_raw` → 开车看图。
-**通道序检查**：游戏里红色的车在 Image 显示里也应是红色（若红蓝互换 = BGRA/RGBA 映射错，
-报给 bridge 侧改 encOf）。深度/语义图同法（`image_depth` 显示为 32FC1 灰度浮点，
-RViz2 Image 显示会自动归一化）。
+RViz2：Fixed Frame `ac_world` → Add → **Image** → 话题 `/ac/camera/front/image_depth`
+（32FC1 自动归一化）或 `image_classes`（mono8 ID 图）。**color 是 CompressedImage**，
+RViz2 的 Image 显示不直接认——两种看法：
+```bash
+# 法一：image_transport 解压转发成 Image（最常用）
+ros2 run image_transport republish compressed in:=/ac/camera/front/image_raw out:=/ac/camera/front/image_raw
+# 法二：RViz2 Image 显示里直接选 compressed 传输的话题（Best Effort 注意 QoS）
+```
+**通道序检查**：游戏里红色的车在解压后的 Image 显示里也应是红色（JPEG 为 RGB 编码）。
 
 ## 语义类词汇表（M3，2026-10-03）
 
@@ -424,9 +439,9 @@ ndarray 不是 `collections.abc.Sequence`）；而 **bytes/list 输入触发逐�
 
 ## 后续计划
 
-- **图像压缩接收**：`MODE_COMPRESSED` → `sensor_msgs/CompressedImage` 分支（线格式已预留，
-  Windows 端 NVENC 就绪后联调）。
-- **CameraInfo + 相机 TF**：`base_link→<cam>_frame` 静态 TF 与内参发布。
+- ~~**图像压缩接收**~~：**已实现（2026-10-14）**——color CompressedImage 透传 /
+  depth LZ4→32FC1 米制 / semantic LZ4→mono8 ID / camera_info 内参（见"相机图像"节）。
+- **相机 TF**：`base_link→<cam>_frame` 静态 TF（内参已随 camera_info 发布）。
 - **/clock + use_sim_time**：relay 发布 /clock，届时只替换 RelayContext 的取时来源。
 - **统一帧号源**：gamehook_ac/optix 把场景帧号写进 image/lidar SHM → 严格帧对齐（当前
   ego↔dets 严格、ego↔lidar ≈1-2 帧、图像独立，见"帧对齐现状"）。

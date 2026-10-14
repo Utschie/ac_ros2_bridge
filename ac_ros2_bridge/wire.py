@@ -44,14 +44,63 @@ LIDAR_HIT_SIZE = 24
 IMAGE_FMT = "<QQIIHHI"
 IMAGE_SIZE = struct.calcsize(IMAGE_FMT)  # 32
 
-# ac_payload::ImageEncoding -> ROS sensor_msgs/Image encoding string.
-# MONO8/H264 reserved on the wire; H264 maps to CompressedImage in a future phase.
+# ac_payload::ImageEncoding -> ROS sensor_msgs/Image encoding string (raw path).
 ENCODING_TO_ROS = {
     0: "rgba8",    # ENC_RGBA8
     1: "bgra8",    # ENC_BGRA8
     2: "32FC1",    # ENC_R32F (depth)
     3: "mono8",    # ENC_MONO8
 }
+
+# M2 压缩 wire（2026-10-12 起游戏内编码，shared/zenoh_payload_format.md 契约）：
+# mode=MODE_COMPRESSED 时 data 不再是裸像素——
+#   ENC_JPEG(5)    image_raw    : 整段 JPEG 码流（nvJPEG q90、4:2:0、RGB）
+#   ENC_DEPTH16(6) image_depth  : LZ4 块，解压后 = 米制 u16 行主序 LE（w*h*2 B）
+#   ENC_MONO8(3)   image_classes: LZ4 块，解压后 = u8 类别 ID 行主序（w*h B）
+# 类别 ID -> 类名/颜色 = ac/semantic/classes JSON 数组序（首项必须 UNKNOWN=0）。
+MODE_RAW = 0
+MODE_COMPRESSED = 1
+ENC_JPEG = 5
+ENC_DEPTH16 = 6
+# 深度 dscale 契约（用户裁定 2026-10-10）：米 = u16 / 327.675（满量程 200m，
+# 量化 3.05mm）；>200m/天空/异常钳为 65535（解码后自然 = 200.0 m）。
+DEPTH16_DSCALE = 327.675
+
+# CameraInfoPayload: char name[32], uint32 width, height, float fovDeg,
+#                    nearPlane, farPlane  (== 52 bytes)
+CAMINFO_FMT = "<32sIIfff"
+CAMINFO_SIZE = struct.calcsize(CAMINFO_FMT)  # 52
+
+
+def decompress_lz4(data: bytes, expect_bytes: int) -> bytes:
+    """Decompress an LZ4 block whose uncompressed size is exactly expect_bytes.
+
+    Mirrors the producer (vendored shared/3rdparty/lz4.c LZ4_compress_default —
+    raw block, no frame header) and the reference consumer
+    ac_sim_bridge/tools/wire_depth_check.py. Fail-loud on any size mismatch
+    (the M4 花屏预防条款的 Linux 对偶). Needs python-lz4 (pip install lz4).
+    """
+    import lz4.block  # lazy: non-image domains run without it
+    raw = lz4.block.decompress(data, uncompressed_size=expect_bytes)
+    if len(raw) != expect_bytes:
+        raise ValueError(f"lz4 result {len(raw)}B != expected {expect_bytes}B")
+    return raw
+
+
+def decode_camera_info(data: bytes) -> dict:
+    """Decode a CameraInfoPayload (52 bytes) from ac/camera/<n>/camera_info.
+
+    Published by the bridge once per camera at first frame (fov/near/far from
+    the ring's textureCams — same source as the dump; width/height are the
+    post-crop normalized dims on the wire).
+    """
+    if len(data) < CAMINFO_SIZE:
+        raise ValueError(f"camera_info payload too short: {len(data)} < {CAMINFO_SIZE}")
+    name_b, width, height, fov_deg, near, far = struct.unpack(
+        CAMINFO_FMT, data[:CAMINFO_SIZE])
+    return {"name": name_b.split(b"\x00", 1)[0].decode("ascii", errors="replace"),
+            "width": width, "height": height,
+            "fov_deg": fov_deg, "near": near, "far": far}
 
 # ControlPayload: float steering/throttle/brake/clutch/handBrake,
 #                 int32 requestedGearIndex, uint32 buttons, uint32 flags (== 32 bytes)
