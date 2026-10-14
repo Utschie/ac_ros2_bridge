@@ -168,7 +168,7 @@ python3 ~/colcon_ws/src/ac_ros2_bridge/tools/zenoh_rate_probe.py --seconds 12
 | 桥日志满发、Linux 探针速率远低于配额、gap 秒级 | 链路带宽不够（WiFi 典型）→ 换网线直连（§4） |
 | RViz2 找不到彩色图话题 | CompressedImage 类型被 RViz2 选择器滤掉 → republish（§5） |
 | republish 起了但没图 | 用了 `in:=` 简写（订阅悬空在 /in/compressed）→ 全名重映射（§5） |
-| camera_info 话题缺失 | 桥只在环连接瞬间一次性发布，撞上图像洪水可能被丢 → 重启桥（relay 保持运行时大概率收到）；长期方案为周期重发（挂账） |
+| camera_info 话题缺失 | 桥自 20261014.1 起每 5s 周期重发（等 5s 必到；ROS 侧 latched 一次即永久）；更早版本为一次性发布、撞图像洪水可能被丢 → 重启桥 |
 | RViz 报 incompatible QoS 无图 | 图像发布器为 RELIABLE；RViz2 默认 RELIABLE 订阅兼容，报错多为其他发布器混入 |
 | Linux 构建报 "existing path cannot be removed: Is a directory" | 旧构建产物撞 symlink 模式 → `rm -rf build install log` 重建（§2.3） |
 | Windows 有线插回路由器无法上网 | 直连静态 IP 残留 → 还原 DHCP（§4 末尾命令块） |

@@ -189,7 +189,7 @@ camera's quota, max gap ~100 ms; relay CPU ~6%.
 | bridge log shows full send rate, Linux probe far below quota, multi-second gaps | Link bandwidth insufficient (typical on WiFi) → switch to a direct Ethernet link (§4) |
 | Color topic not findable in RViz2 | CompressedImage filtered out by RViz2's type-based picker → republish (§5) |
 | republish runs but no images | Used the `in:=` short syntax (subscription dangles on /in/compressed) → full-name remapping (§5) |
-| camera_info topic missing | The bridge publishes it once at ring-connect; it can be dropped in the image burst → restart the bridge (with the relay already running it usually arrives); long-term fix is periodic resend (pending) |
+| camera_info topic missing | Since bridge 20261014.1 the bridge resends it every 5 s (it arrives within 5 s; the ROS side latches it permanently once received); older versions published it once at ring-connect and could drop it in the image burst → restart the bridge |
 | RViz reports incompatible QoS, no images | Image publishers are RELIABLE; RViz2's default RELIABLE subscription is compatible — the error usually comes from some other publisher |
 | Linux build fails "existing path cannot be removed: Is a directory" | Old build artifacts clash with symlink mode → `rm -rf build install log` and rebuild (§2.3) |
 | Windows wired Internet dead after plugging back into the router | Leftover direct-link static IP → restore DHCP (§4 restore block) |
