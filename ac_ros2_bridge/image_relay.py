@@ -139,9 +139,11 @@ class CameraRelay:
                                       f"({key}), dropped")
                     return
                 raw = wire.decompress_lz4(img["data"], w * h * 2)
-                # u16 -> meters (dscale contract; 65535 -> 200.0 m = sky)
-                meters = (np.frombuffer(raw, dtype="<u2").astype(np.float64)
-                          / wire.DEPTH16_DSCALE).astype(np.float32)
+                # u16 -> meters (dscale contract; 65535 -> exactly 200.0 m = sky).
+                # 纯 float32 原地乘（不走 float64 中转）：zenoh 回调单线程，
+                # 满配额时这里的内存带宽是 relay 吞吐瓶颈（2026-10-14 实测）。
+                meters = np.frombuffer(raw, dtype="<u2").astype(np.float32)
+                meters *= np.float32(1.0 / wire.DEPTH16_DSCALE)
                 self._publish_image(f"/{key}", cam, img, "32FC1", w * 4, meters)
             elif suffix == "image_classes":
                 if enc != 3:

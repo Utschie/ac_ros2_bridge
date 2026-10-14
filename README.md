@@ -85,7 +85,7 @@ frames.py        AC→ROS 坐标转换（全部定案事实见其 docstring）
 ## 依赖（Linux）
 
 - **ROS2 Humble 或 Jazzy**（两者皆可；中继走 zenoh-python 直连、非 rmw_zenoh，故发行版灵活。含 `rclpy`、`geometry_msgs`、`vision_msgs`、`visualization_msgs`、`tf2_ros`。vision_msgs 字段差异已自动兼容）。
-- **zenoh-python 1.x**：`pip install zenoh`（非 ROS 包，pip 装）。
+- **zenoh-python 1.x**：`pip install zenoh`（实际包名 `eclipse-zenoh`，pip 装）。
 - **python-lz4**：`pip install lz4`（depth/semantic 压缩帧解压；非 ROS 包，pip 装）。
 - **RViz 的 Detection3DArray 显示插件**（可选，`/ac/detections_3d` 原生显示）：
   ```bash
@@ -436,6 +436,16 @@ ndarray 不是 `collections.abc.Sequence`）；而 **bytes/list 输入触发逐�
 3. **iperf 要分 v4/v6 各测**（zenoh 实际走的族可能和直觉不同）；
 4. `ros2 run` 会先起一个壳进程，py-spy/pgrep 抓错 PID 会得到"一切正常"的假象；
 5. 大载荷 `uint8[]` 字段：**直写 `msg._data = np.frombuffer(...)`**，绝不走 setter。
+
+## 工具（tools/，无 ROS 依赖）
+
+- **zenoh_rate_probe.py**：zenoh 速率探针——按 key 统计真实送达速率与到达
+  间隔，区分"链路丢帧"与"消费端处理跟不上"（对照 relay 的 ROS 发布率定责）。
+  ```bash
+  python3 tools/zenoh_rate_probe.py                      # ac/camera/** 10s（连本机 relay）
+  python3 tools/zenoh_rate_probe.py ac/ego_pose -s 30    # 多 key 定窗
+  python3 tools/zenoh_rate_probe.py --listen tcp/0.0.0.0:7447   # peer 模式等桥直连
+  ```
 
 ## 后续计划
 
