@@ -1,5 +1,10 @@
 # ac_ros2_bridge
 
+> **部署与联测完整说明书 / Full deployment & integration manual**：
+> [USAGE_cn.md](USAGE_cn.md)（中文）· [USAGE_en.md](USAGE_en.md)（English）
+> ——Windows/Linux 两端设置、网线直连拓扑、RViz2 使用、验收清单、排查表
+> （2026-10-14 全链实测沉淀）。
+
 AC 仿真 ↔ ROS2 中继（Linux 端）。订阅 Windows 上 `ac_sim_bridge` 经 **Zenoh** 发出的数据，
 按 `shared/zenoh_payload.h` 解码，发布标准 ROS2 话题，让你在 **RViz** 里看到车移动 + 周围车 3D OBB。
 
@@ -326,8 +331,11 @@ RViz2：Fixed Frame `ac_world` → Add → **Image** → 话题 `/ac/camera/fron
 （32FC1 自动归一化）或 `image_classes`（mono8 ID 图）。**color 是 CompressedImage**，
 RViz2 的 Image 显示不直接认——两种看法：
 ```bash
-# 法一：image_transport 解压转发成 Image（最常用）
-ros2 run image_transport republish compressed in:=/ac/camera/front/image_raw out:=/ac/camera/front/image_raw
+# 法一：image_transport 解压转发成 Image（最常用；Humble 实测 in:= 简写会
+# 把订阅落到字面量 /in/compressed 上，必须用全名重映射 + 独立节点名）
+ros2 run image_transport republish compressed raw --ros-args \
+  -r /in/compressed:=/ac/camera/front/image_raw/compressed \
+  -r /out:=/ac/camera/front/image_raw -r __node:=republish_front
 # 法二：RViz2 Image 显示里直接选 compressed 传输的话题（Best Effort 注意 QoS）
 ```
 **通道序检查**：游戏里红色的车在解压后的 Image 显示里也应是红色（JPEG 为 RGB 编码）。
