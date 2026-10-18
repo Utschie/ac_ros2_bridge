@@ -114,7 +114,7 @@ def main() -> None:
     # M2 compressed wire (2026-10-14 adaptation): enums + lz4 round-trips
     assert wire.MODE_RAW == 0 and wire.MODE_COMPRESSED == 1
     assert wire.ENC_JPEG == 5 and wire.ENC_DEPTH16 == 6
-    assert abs(wire.DEPTH16_DSCALE - 327.675) < 1e-9
+    assert abs(wire.DEPTH16_DSCALE - 32.7675) < 1e-9
     try:
         import lz4.block  # pip install lz4
         have_lz4 = True
@@ -135,8 +135,8 @@ def main() -> None:
         assert list(m) == [0, 32768, 65535, 1234]
         meters = (m.astype(np.float64) / wire.DEPTH16_DSCALE).astype(np.float32)
         assert abs(meters[0]) < 1e-6                    # 0 m
-        assert abs(meters[1] - 100.0021) < 1e-3         # 32768 -> ~100 m
-        assert abs(meters[2] - 200.0) < 1e-3           # 65535 -> exactly 200 m (sky)
+        assert abs(meters[1] - 1000.0153) < 1e-2       # 32768 -> ~1000 m (M17 scale)
+        assert abs(meters[2] - 2000.0) < 1e-2          # 65535 -> exactly 2000 m (sky)
         # semantic frame: 4 class-id bytes
         sblob = lz4.block.compress(bytes([0, 1, 2, 63]), store_size=False)
         ims = wire.decode_image(struct.pack(

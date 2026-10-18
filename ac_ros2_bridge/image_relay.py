@@ -8,8 +8,9 @@ ac/camera/<cam>/<suffix> handling. M2 compressed-wire adaptation (2026-10-14):
                                   compressed transport)
   image_depth   enc=6  LZ4 u16 -> /ac/camera/<cam>/image_depth
                                   (sensor_msgs/Image 32FC1 meters,
-                                   u16 / 327.675; 65535 decodes to 200.0 m
-                                   = sky / full range)
+                                   u16 / 32.7675, 2000 m full scale - M17
+                                   contract since 2026-10-18; 65535 decodes
+                                   to 2000.0 m = sky / full range)
   image_classes enc=3  LZ4 u8  -> /ac/camera/<cam>/image_classes
                                   (sensor_msgs/Image mono8, pixel = class id;
                                   vocabulary = /ac/semantic/classes)

@@ -298,7 +298,7 @@ relay 订阅 `ac/camera/**`。**M2 起三模态全部为压缩帧**（游戏内�
 | zenoh suffix | wire（enc/mode） | ROS 话题 | 消息/处理 |
 |---|---|---|---|
 | `image_raw` | 5 / 1 = 整段 JPEG（nvJPEG q90、4:2:0） | `/ac/camera/<cam>/image_raw/compressed` | `sensor_msgs/CompressedImage`（format="jpeg"）**零解码透传** |
-| `image_depth` | 6 / 1 = LZ4 × 米制 u16 LE | `/ac/camera/<cam>/image_depth` | LZ4 解压 → **`Image` 32FC1 米制**（米 = u16/327.675；65535 精确解码为 200.0m = 天空/满量程） |
+| `image_depth` | 6 / 1 = LZ4 × 米制 u16 LE | `/ac/camera/<cam>/image_depth` | LZ4 解压 → **`Image` 32FC1 米制**（米 = u16/32.7675，满量程 2000m——M17 起契约，2026-10-18；65535 精确解码为 2000.0m = 天空/满量程） |
 | `image_classes` | 3 / 1 = LZ4 × u8 类别 ID | `/ac/camera/<cam>/image_classes` | LZ4 解压 → **`Image` mono8**（像素 = 类别 ID；类名/颜色查 `/ac/semantic/classes`，数组序即 ID；ID 超出词表按 UNKNOWN 处理） |
 | `camera_info` | 52B CameraInfoPayload | `/ac/camera/<cam>/camera_info` | `sensor_msgs/CameraInfo`（K 由 fovDeg 算 Pinhole，TRANSIENT_LOCAL latched） |
 

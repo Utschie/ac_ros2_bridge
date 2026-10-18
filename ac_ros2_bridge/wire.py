@@ -62,9 +62,11 @@ MODE_RAW = 0
 MODE_COMPRESSED = 1
 ENC_JPEG = 5
 ENC_DEPTH16 = 6
-# 深度 dscale 契约（用户裁定 2026-10-10）：米 = u16 / 327.675（满量程 200m，
-# 量化 3.05mm）；>200m/天空/异常钳为 65535（解码后自然 = 200.0 m）。
-DEPTH16_DSCALE = 327.675
+# 深度 dscale 契约：米 = u16 / 32.7675（满量程 2000m，量化 3.05cm）；
+# >2000m/天空/异常钳为 65535（解码后自然 = 2000.0 m）。
+# （M17 用户改判 2026-10-18；旧契约 327.675/200m 系 2026-10-10 裁定——
+#  旧数据靠 index 元数据 dscale 甄别，见 roadmap/m17-camera-far-depth-range.md。）
+DEPTH16_DSCALE = 32.7675
 
 # CameraInfoPayload: char name[32], uint32 width, height, float fovDeg,
 #                    nearPlane, farPlane  (== 52 bytes)
