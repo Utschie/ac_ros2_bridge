@@ -48,18 +48,21 @@ frames.py        AC→ROS 坐标转换（全部定案事实见其 docstring）
 **新增一种数据类型 = 写一个新的域模块**（构造接 `ctx`、`attach(session)` 声明订阅、自己发自己的
 话题），在 relay.py 接线一行——横切策略零复制。
 
-## 坐标系（定案，2026-08 实测）
+## 坐标系（M20 定稿，2026-10-19；详见 m20 文档与 frames.py docstring）
 
-全部转换在 [frames.py](ac_ros2_bridge/frames.py)（`ac_vec_to_ros` = `body_vec_to_ros` =
-唯一保定向映射 `(z,x,y)` / `ac_axes_to_ros_quat` 朝向（无取负）/ `install_pose_to_ros` 安装位姿），
-离线测试 `test_compose.py` 覆盖。四个定案事实与推导历史见 frames.py docstring 和
-[shared/ac_coords.h](../shared/ac_coords.h)。
+**载荷到达本模块时已是用户面（REP-103）约定**（M20 起 ac_sim_bridge 在源头转换，
+ac_coords.h 边界②）：ego/detections 旋转行序=前/左/上、install 位姿=ini 原值
+（x前/y左/z上）、**世界系两侧完全相同**（x/y 水平、z=高度，向量不再置换）。
+frames.py 退化为直通拼装（`ego_pose_to_ros` / `pos_rot_to_ros` /
+`install_pose_to_ros`，quat 一律 quat_from_cols(前,左,上)），离线测试
+`test_compose.py` 覆盖（含验收锚点：front install → translation (0.4,0,1.1) +
+identity quat）。C++ 侧规范见 [shared/ac_coords.h](../shared/ac_coords.h)。
 
 > **⚠️ 验证纪律**：改任何符号前必须对照**游戏画面**在**正读视角**下重新实测（纯代数推演曾连续
 > 失败三轮；后来又因镜像 RViz 相机连续误验三轮）。**正读视角 = RViz 开 TF 显示，base_link 的轴
 > 红(X)朝前、绿(Y)朝左、蓝(Z)朝上**——先确认 axes 正读，再判断内容左右；axes 不正读时一切
 > 内容判断都不可信（从地面下方看世界整体左右镜像，错误数据会显得正确）。调试：relay 每 2s 打印
-> 一行 `egoMatrix`（BODYTR 矩阵原始三元组）——直道停车即可校验矩阵约定；每雷达首见打一行
+> 一行 `egoMatrix`（载荷矩阵三元组，M20 起行序=前/左/上）——直道停车即可校验矩阵约定；每雷达首见打一行
 > `lidarDiag`（名字↔安装位姿↔帧落点↔帧朝向）。
 
 ## 时间戳与 TF 策略（M3，修复 RViz2 "No Transform" 闪烁）

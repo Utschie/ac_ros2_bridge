@@ -69,9 +69,7 @@ class SceneRelay:
             return
         w = e["world"]
         self.ctx.last_ego_world = list(w)   # cached for base_link->sensor TF composition
-        # Debug: raw BODYTR matrix triples, throttled to ~1 line / 2s.
-        # Park the car straight on a straight and read one line: the triple
-        # that matches the car's heading decides the storage orientation.
+        # Debug: payload matrix triples (M20: rows already fwd/left/up), throttled.
         now_t = time.monotonic()
         if now_t - self._last_mtx_log > 2.0:
             self._last_mtx_log = now_t
@@ -80,7 +78,7 @@ class SceneRelay:
                 "r1=[{:.3f},{:.3f},{:.3f}] r2=[{:.3f},{:.3f},{:.3f}]".format(
                     w[12], w[13], w[14],
                     w[0], w[1], w[2], w[4], w[5], w[6], w[8], w[9], w[10]))
-        (px, py, pz), (qx, qy, qz, qw) = frames.ac_body_pose_to_ros(w)
+        (px, py, pz), (qx, qy, qz, qw) = frames.ego_pose_to_ros(w)
 
         # One local-time sample per callback; the message and its TF share it.
         t = self.ctx.now()
@@ -141,11 +139,12 @@ class SceneRelay:
 
         markers = MarkerArray()
         for i, det in enumerate(d["detections"]):
-            (px, py, pz), (qx, qy, qz, qw) = frames.ac_pos_rot_to_ros(
+            (px, py, pz), (qx, qy, qz, qw) = frames.pos_rot_to_ros(
                 det["world_pos"], det["world_rot"])
-            # AC half-extents order (X=right, Y=up, Z=fwd) -> ROS (X=fwd, Y=right, Z=up)
+            # M20: payload half_extents order = (fwd, left, up) -> ROS size
+            # x=length, y=width, z=height (direct mapping, no reorder)
             he = det["half_extents"]
-            sx, sy, sz = 2.0 * he[2], 2.0 * he[0], 2.0 * he[1]  # length / width / height
+            sx, sy, sz = 2.0 * he[0], 2.0 * he[1], 2.0 * he[2]
 
             d3 = Detection3D()
             d3.bbox.center.position.x = px

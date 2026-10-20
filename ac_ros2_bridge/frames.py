@@ -1,51 +1,42 @@
-"""AC <-> ROS coordinate conversion - THE single place for axis/frame math.
+"""Coordinate frames - THE single place for axis/frame math (M20, 2026-10-19).
 
-FINAL (fix-10, 2026-08; verified in a CANONICAL RViz view - axes red=fwd,
-green=left, blue=up; C++ counterpart: shared/ac_coords.h):
+M20 doctrine (supersedes fix-10; see roadmap/m20-unified-ros-frames.md and
+shared/ac_coords.h):
 
-1. AC->ROS is ONE proper map for BOTH world and body data:
-   (x,y,z) -> (z, x, y)   [det=+1]
-   (AC Z fwd->ROS X, AC X left->ROS Y, AC Y up->ROS Z.)
-2. BODYTR/body frame: +X = physical LEFT (+Y up, +Z fwd); ini
-   POSITION/FORWARD follow this (side sensors: left has x > 0).
-3. SHM world-matrix contiguous triples m[0:3]/[4:7]/[8:11] ARE the frame's
-   X/Y/Z axis images (settled via raw egoMatrix log, fix-8).
-   Orientation quats: quat(B(fwd), B(x_axis), B(up)) with fwd=m[8:11],
-   x_axis=m[0:3] - NO negation anywhere.
-4. Lidar hits need NO chirality flip: optix's buildSensorRot convention
-   matches the install-pose frames axis-for-axis (verified for
-   front/rear/left). Do not negate hit y.
+1. All USER-FACING surfaces speak REP-103 (x fwd, y left, z up): config ini,
+   dumps, zenoh payloads, ROS topics, viewer axis labels.
+2. The AC body frame (+X left, +Y up, +Z fwd) is an INTERNAL implementation
+   detail of the game side / SHM. ac_sim_bridge converts at the source
+   (ac_coords.h boundary #2) BEFORE publishing, so payloads arrive already
+   in user-facing convention:
+     - EgoPosePayload.world rows = fwd / left / up (was left / up / fwd)
+     - Detection3D: half_extents = (fwd, left, up), world_rot rows = fwd/left/up
+     - LidarPayload: install_pos / install_fwd = vehicle frame x fwd, y left, z up
+3. The WORLD is ALSO already converted at the bridge (ac_coords.h v2):
+   the AC SCENE/render world is Y-up (x/z horizontal, y = altitude -
+   settled 2026-10-20: parked-car up axis reads exactly +Y, and driving
+   data keeps y constant while x/z move; the acpmf physics-block comment
+   "X/Y plane, Z height" describes the PHYSICS world, a different frame -
+   do not conflate). Payload world triples are already standard Z-up
+   (x/y horizontal, z = altitude) via ac.z->x, ac.x->y, ac.y(up)->z.
+   (fix-10's world map was right; M20-v1 briefly shipped a pass-through
+   Y-up world and was corrected the same day - v2.)
+4. Sensor-local point clouds were always ROS-style (x fwd, y left, z up) and
+   still pass through untouched.
 
-ROOT CAUSE NOTE (why fix-6..9 looked right): the world-position map
-(z,-x,y) used between fix-6 and fix-10 is a REFLECTION (det=-1). Paired
-with the proper ego quat it mirrored the car-vs-world arrangement; all
-validations of that era were made through an accidentally mirrored RViz
-camera (viewing from below the ground plane), and mirror x mirror looked
-correct. When the camera was righted, dets appeared left-right swapped
-and lidar clouds mirrored. Always validate with the camera ABOVE the
-plane, axes reading red=fwd/green=left/blue=up.
-
-If anything looks wrong in RViz (mirrored / tilted / swapped), fix it HERE -
-all consumers (ego pose, OBBs, lidar TF, future camera TF) go through these
+So this module is now mostly direct assembly: quats come from
+quat_from_cols(fwd, left, up) on payload rows as-is, positions pass through
+unchanged. If anything looks wrong in RViz (mirrored / tilted / swapped),
+fix it HERE - all consumers (ego pose, OBBs, lidar TF) go through these
 functions. Covered by test_compose.py (run on any OS, no ROS needed).
+
+Validation discipline (unchanged): canonical RViz view - camera ABOVE the
+ground plane, axes reading red=fwd / green=left / blue=up. A mirrored camera
+once made a reflected map look correct through four validation rounds
+(fix-6..9 war story); never trust a view that is not right-side-up.
 """
 
 import math
-
-
-def ac_vec_to_ros(v):
-    """WORLD-frame vector -> ROS. Same proper map as the body frame:
-    AC Z(fwd)->ROS X, AC X(left)->ROS Y, AC Y(up)->ROS Z (det=+1).
-    The earlier (z,-x,y) variant is a REFLECTION (det=-1): paired with the
-    proper ego quat it silently mirrored the car-vs-world arrangement."""
-    x, y, z = v
-    return (z, x, y)
-
-
-def body_vec_to_ros(v):
-    """BODYTR-local vector (ini POSITION/FORWARD, +X = physical LEFT) -> ROS."""
-    x, y, z = v
-    return (z, x, y)
 
 
 def quat_from_cols(c0, c1, c2):
@@ -81,88 +72,85 @@ def quat_from_cols(c0, c1, c2):
     return qx, qy, qz, qw
 
 
-def ac_axes_to_ros_quat(x_axis, up, fwd):
-    """Axis triples from SHM matrices (x_axis = the m[0:3] triple, physically
-    LEFT) -> ROS quat: quat(B(fwd), B(x_axis), B(up)), proper rotation
-    (det=+1). The earlier negated variant paired with the reflecting world
-    map produced a chirality-consistent-looking but globally mirrored world
-    (all pre-fix-10 validations were made through a mirrored RViz camera)."""
-    return quat_from_cols(ac_vec_to_ros(fwd), ac_vec_to_ros(x_axis),
-                          ac_vec_to_ros(up))
-
-
-def ac_body_pose_to_ros(world16):
-    """BODYTR world matrix (16 floats, AC row-major storage) ->
-    (ros_position, ros_quat) of the car in the ROS ac_world frame."""
-    pos_r = ac_vec_to_ros(world16[12:15])
-    quat = ac_axes_to_ros_quat(world16[0:3], world16[4:7], world16[8:11])
+def ego_pose_to_ros(world16):
+    """EgoPosePayload.world (bridge-converted: rows = fwd/left/up, world
+    triples already Z-up user world) -> (ros_position, ros_quat). Direct
+    assembly; the (z,x,y) world permutation happened at the bridge
+    (ac_coords.h v2) - do NOT permute here again."""
+    pos_r = tuple(world16[12:15])
+    quat = quat_from_cols(world16[0:3], world16[4:7], world16[8:11])
     return pos_r, quat
 
 
-def ac_pos_rot_to_ros(pos3, rot_cols9):
-    """Separate position (3 floats) + BODYTR-style rotation (column triples,
-    e.g. Detection3D world_pos/world_rot) -> (ros_position, ros_quat).
-    Same math as ac_body_pose_to_ros, for payloads that split the two."""
-    pos_r = ac_vec_to_ros(pos3)
-    quat = ac_axes_to_ros_quat(rot_cols9[0:3], rot_cols9[3:6], rot_cols9[6:9])
+def pos_rot_to_ros(pos3, rot9):
+    """Detection3D world_pos/world_rot (bridge-converted, Z-up user world)
+    -> (ros_position, ros_quat). Same direct assembly as ego_pose_to_ros."""
+    pos_r = tuple(pos3)
+    quat = quat_from_cols(rot9[0:3], rot9[3:6], rot9[6:9])
     return pos_r, quat
-
-
-def sensor_axes_to_ros_quat(fwd, y_axis, up):
-    """Sensor axes as world-frame triples (from compose_base_to_sensor;
-    sensor convention x=fwd, y=left, z=up) -> ROS quat for a
-    base_link-><sensor>_frame TF. Same convention as ac_axes_to_ros_quat."""
-    return quat_from_cols(ac_vec_to_ros(fwd), ac_vec_to_ros(y_axis),
-                          ac_vec_to_ros(up))
 
 
 def install_pose_to_ros(install_pos, install_fwd):
-    """custom_lidars.ini install pose (POSITION/FORWARD, BODYTR-local frame:
-    +X = physical LEFT - see module docstring) -> (ros_position, ros_quat)
-    for a base_link -> <sensor>_frame TF. Sensor up is the body up axis.
+    """LidarPayload install pose (vehicle frame x fwd, y left, z up - the ini
+    POSITION/FORWARD carried through unchanged since M20) ->
+    (ros_position, ros_quat) for a base_link -> <sensor>_frame TF. Sensor up
+    is the vehicle up axis.
 
-    Deterministic and eyeball-verifiable against the ini: front FORWARD=(0,0,1)
-    -> identity quat, rear (0,0,-1) -> 180-deg Z, left (1,0,0) -> +90 deg,
-    right (-1,0,0) -> -90 deg. Uses the BODYTR map, NOT the world map."""
-    import math as _m
+    Deterministic and eyeball-verifiable against the ini: front FORWARD=(1,0,0)
+    -> identity quat, rear (-1,0,0) -> 180-deg Z, left (0,1,0) -> +90 deg,
+    right (0,-1,0) -> -90 deg."""
     fx, fy, fz = install_fwd
-    n = _m.sqrt(fx * fx + fy * fy + fz * fz) or 1.0
+    n = math.sqrt(fx * fx + fy * fy + fz * fz) or 1.0
     fwd = (fx / n, fy / n, fz / n)
-    up = (0.0, 1.0, 0.0)
-    # algebraic cross(up, fwd) in the X-left body frame IS the sensor's left axis
+    up = (0.0, 0.0, 1.0)
+    # cross(up, fwd) in the x-fwd/y-left/z-up frame IS the sensor's left axis
     left = (
         up[1] * fwd[2] - up[2] * fwd[1],
         up[2] * fwd[0] - up[0] * fwd[2],
         up[0] * fwd[1] - up[1] * fwd[0],
     )
-    quat = quat_from_cols(body_vec_to_ros(fwd), body_vec_to_ros(left),
-                          body_vec_to_ros(up))
-    return body_vec_to_ros(install_pos), quat
+    quat = quat_from_cols(fwd, left, up)
+    return tuple(install_pos), quat
+
+
+def sensor_axes_to_ros_quat(fwd, y_axis, up):
+    """Sensor axes as world-frame triples (from compose_base_to_sensor; sensor
+    convention x fwd, y left, z up) -> ROS quat for a base_link-><sensor>_frame
+    TF. World frame passes through unchanged, so this is plain assembly."""
+    return quat_from_cols(fwd, y_axis, up)
 
 
 def compose_base_to_sensor(ego_world, world_pos, world_rot9):
-    """T(base -> sensor) = inv(E) . S, all in AC coordinates.
-
-    ego_world : 16-float BODYTR world matrix (AC storage; triples m[0:3]/[4:7]/
-                [8:11] are the body's X/Y/Z axes in world).
-    world_pos : sensor position in AC world (3 floats).
-    world_rot9: sensor rotation, 9 floats as stored by ac_optix_renderer's mat3f
-                (row-major; mul(R, sensor_local) = world).
-
-    Returns (t, cols): sensor origin in the BODYTR frame, and the sensor's
-    local x/y/z axis directions in the BODYTR frame (3 AC-frame triples).
-    Numerically verified by test_compose.py (identity + yawed cases).
-    """
+    """T(base -> sensor) = inv(E) . S. Inputs in PAYLOAD convention (M20):
+    ego_world rows = fwd/left/up (user-facing body axes in world), world_rot9
+    rows = sensor x/y/z axes in world. Returns (t, cols): sensor origin in the
+    base frame and the sensor's local x/y/z axis directions in the base frame.
+    Numerically the same matrix algebra as before - the relabeling happens
+    upstream at the bridge (ac_coords.h boundary #2)."""
     ep = ego_world[12:15]
-    e_rows = (ego_world[0:3], ego_world[4:7], ego_world[8:11])  # C^T rows
-    s_rows = tuple(world_rot9[i:i + 3] for i in (0, 3, 6))      # S rows
-    # rr = C^T . S; columns of rr are the sensor axes in the body frame
-    rr = [[sum(e_rows[i][k] * s_rows[k][j] for k in range(3))
-           for j in range(3)] for i in range(3)]
-    # t = C^T . (sensor_pos - body_pos)
+    e_rows = (ego_world[0:3], ego_world[4:7], ego_world[8:11])
+    s_rows = tuple(world_rot9[i:i + 3] for i in (0, 3, 6))
+    # cols[j] = sensor axis j (S row j, a WORLD vector) expressed in the base
+    # frame: project onto the base axes (E rows). NOTE (M20): the pre-M20 code
+    # built cols as columns of E.S (= E . S-column-j), which coincided with
+    # the correct answer only because all historical test matrices were
+    # symmetric; the rewritten non-symmetric anchor case exposed it.
+    cols = tuple(
+        tuple(sum(e_rows[i][k] * s_rows[j][k] for k in range(3))
+              for i in range(3))
+        for j in range(3))
+    # t = sensor origin offset expressed in the base frame (project d onto E rows)
     d = tuple(world_pos[i] - ep[i] for i in range(3))
     t = tuple(sum(e_rows[i][k] * d[k] for k in range(3)) for i in range(3))
-    cols = ((rr[0][0], rr[1][0], rr[2][0]),
-            (rr[0][1], rr[1][1], rr[2][1]),
-            (rr[0][2], rr[1][2], rr[2][2]))
     return t, cols
+
+
+# ---- Back-compat aliases (old fix-10-era names; payloads changed meaning in
+# M20, so these now operate on the new user-facing payload layout). Kept only
+# if some consumer still imports the old names; prefer the names above. ----
+def ac_body_pose_to_ros(world16):
+    return ego_pose_to_ros(world16)
+
+
+def ac_pos_rot_to_ros(pos3, rot_cols9):
+    return pos_rot_to_ros(pos3, rot_cols9)

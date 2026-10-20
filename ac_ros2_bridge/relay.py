@@ -95,7 +95,7 @@ class AcRelay(Node):
                                "+ ac/lidar/*/points + ac/camera/** + ac/vehicle_state "
                                "+ ac/expert_ctrl + ac/semantic/classes; forwarding "
                                "/ac/vehicle_cmd -> zenoh "
-                               "(AC->ROS axis remap in frames.py)")
+                               "(M20: payloads arrive user-facing; frames.py assembles)")
 
     def close(self) -> None:
         self._ctx.close()
