@@ -7,3 +7,6 @@ __pycache__/
 build/
 install/
 log/
+
+# markdown-collab 扩展元数据（本地协作状态，不入库）
+.markdown-collab/
