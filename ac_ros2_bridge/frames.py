@@ -1,28 +1,20 @@
-"""Coordinate frames - THE single place for axis/frame math (M20, 2026-10-19).
+"""Coordinate frames - THE single place for axis/frame math.
 
-M20 doctrine (supersedes fix-10; see roadmap/m20-unified-ros-frames.md and
-shared/ac_coords.h):
+Doctrine:
 
 1. All USER-FACING surfaces speak REP-103 (x fwd, y left, z up): config ini,
    dumps, zenoh payloads, ROS topics, viewer axis labels.
-2. The AC body frame (+X left, +Y up, +Z fwd) is an INTERNAL implementation
-   detail of the game side / SHM. ac_sim_bridge converts at the source
-   (ac_coords.h boundary #2) BEFORE publishing, so payloads arrive already
-   in user-facing convention:
+2. The game's internal body frame (+X left, +Y up, +Z fwd) never leaves the
+   Windows side. The bridge converts at the source BEFORE publishing, so
+   payloads arrive already in the user-facing convention:
      - EgoPosePayload.world rows = fwd / left / up (was left / up / fwd)
      - Detection3D: half_extents = (fwd, left, up), world_rot rows = fwd/left/up
      - LidarPayload: install_pos / install_fwd = vehicle frame x fwd, y left, z up
-3. The WORLD is ALSO already converted at the bridge (ac_coords.h v2):
-   the AC SCENE/render world is Y-up (x/z horizontal, y = altitude -
-   settled 2026-10-20: parked-car up axis reads exactly +Y, and driving
-   data keeps y constant while x/z move; the acpmf physics-block comment
-   "X/Y plane, Z height" describes the PHYSICS world, a different frame -
-   do not conflate). Payload world triples are already standard Z-up
+3. The WORLD is also already converted at the bridge: the game's scene
+   world is Y-up; payload world triples arrive standard Z-up
    (x/y horizontal, z = altitude) via ac.z->x, ac.x->y, ac.y(up)->z.
-   (fix-10's world map was right; M20-v1 briefly shipped a pass-through
-   Y-up world and was corrected the same day - v2.)
-4. Sensor-local point clouds were always ROS-style (x fwd, y left, z up) and
-   still pass through untouched.
+4. Sensor-local point clouds are natively ROS-style (x fwd, y left, z up)
+   and pass through untouched.
 
 So this module is now mostly direct assembly: quats come from
 quat_from_cols(fwd, left, up) on payload rows as-is, positions pass through
@@ -92,7 +84,7 @@ def pos_rot_to_ros(pos3, rot9):
 
 def install_pose_to_ros(install_pos, install_fwd):
     """LidarPayload install pose (vehicle frame x fwd, y left, z up - the ini
-    POSITION/FORWARD carried through unchanged since M20) ->
+    POSITION/FORWARD carried through unchanged) ->
     (ros_position, ros_quat) for a base_link -> <sensor>_frame TF. Sensor up
     is the vehicle up axis.
 
@@ -121,7 +113,7 @@ def sensor_axes_to_ros_quat(fwd, y_axis, up):
 
 
 def compose_base_to_sensor(ego_world, world_pos, world_rot9):
-    """T(base -> sensor) = inv(E) . S. Inputs in PAYLOAD convention (M20):
+    """T(base -> sensor) = inv(E) . S. Inputs in PAYLOAD convention:
     ego_world rows = fwd/left/up (user-facing body axes in world), world_rot9
     rows = sensor x/y/z axes in world. Returns (t, cols): sensor origin in the
     base frame and the sensor's local x/y/z axis directions in the base frame.
@@ -131,7 +123,7 @@ def compose_base_to_sensor(ego_world, world_pos, world_rot9):
     e_rows = (ego_world[0:3], ego_world[4:7], ego_world[8:11])
     s_rows = tuple(world_rot9[i:i + 3] for i in (0, 3, 6))
     # cols[j] = sensor axis j (S row j, a WORLD vector) expressed in the base
-    # frame: project onto the base axes (E rows). NOTE (M20): the pre-M20 code
+    # frame: project onto the base axes (E rows). NOTE: an earlier version
     # built cols as columns of E.S (= E . S-column-j), which coincided with
     # the correct answer only because all historical test matrices were
     # symmetric; the rewritten non-symmetric anchor case exposed it.
@@ -145,8 +137,8 @@ def compose_base_to_sensor(ego_world, world_pos, world_rot9):
     return t, cols
 
 
-# ---- Back-compat aliases (old fix-10-era names; payloads changed meaning in
-# M20, so these now operate on the new user-facing payload layout). Kept only
+# ---- Back-compat aliases (legacy names; payloads now arrive in the
+# user-facing layout, so these operate on that). Kept only
 # if some consumer still imports the old names; prefer the names above. ----
 def ac_body_pose_to_ros(world16):
     return ego_pose_to_ros(world16)

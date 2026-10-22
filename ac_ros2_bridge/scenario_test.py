@@ -2,7 +2,7 @@
 
 The full-chain counterpart of ac_sim_bridge/tools/vehicle_cmd_scenario.py: this
 one drives through the ROS2 relay (Linux) -> zenoh -> Windows bridge -> game,
-i.e. it exercises the M4 pipeline end to end including the message definitions.
+i.e. it exercises the pipeline end to end including the message definitions.
 
 Run (Linux, relay already running, bridge + AC on the Windows machine):
 
@@ -25,7 +25,7 @@ message (bridge RX_TIMEOUT_MS).
 
 NOTE for future edits: all fields here are scalars. If an array field is ever
 added to these messages, NEVER assign it through the rclpy setter (per-element
-Python assertion loop, see relay README 调试记录) - direct-write the private
+Python assertion loop; see control_relay.py rules) - direct-write the private
 slot:  msg._data = np.frombuffer(raw, np.uint8).
 """
 
@@ -52,7 +52,7 @@ def clamp01(v):
 
 # (name, duration_s, command kwargs, in-game expectation)
 # REL_DN/REL_UP run AFTER BRAKE on purpose: downshifting into 1st at ~16 m/s
-# is blocked by the game's shift protection (observed 2026-08-18).
+# is blocked by the game's shift protection.
 PHASES = [
     ("LAUNCH",       4.0, dict(throttle=0.25, requested_gear_index=2),
      "1st gear engages (feedback gear -> 2), car creeps forward"),

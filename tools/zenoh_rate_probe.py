@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
-r"""zenoh 速率探针（2026-10-14 立，WSL 验收轮的裸计数器固化）.
+r"""zenoh rate probe.
 
-本仓 tools/ 首个工具：Linux 端 zenoh 总线诊断——按 key 统计真实送达
-速率与到达间隔，区分 "链路/生产侧丢帧" 与 "消费端处理跟不上"（对照
-relay 的 ROS 发布率即可定责；2026-10-14 实测案例：裸计数满额 14.5/15
-而 relay 发布 5.3/15，定谳 relay 单线程处理瓶颈）。
+Linux-side zenoh bus diagnostics: per-key delivery rates and inter-arrival
+gaps, separating "link/producer drops" from "consumer can't keep up"
+(compare against the relay's ROS publish rates to place the blame).
 
-用法（无 ROS 依赖，任意有 python3 + eclipse-zenoh 的机器可跑）:
-    python zenoh_rate_probe.py [key ...]           # 默认 ac/camera/**，10s
+Usage (no ROS dependency; runs anywhere with python3 + eclipse-zenoh):
+    python zenoh_rate_probe.py [key ...]           # default ac/camera/**, 10s
     python zenoh_rate_probe.py ac/camera/** ac/ego_pose --seconds 30
-    python zenoh_rate_probe.py --connect tcp/192.168.0.79:7447
+    python zenoh_rate_probe.py --connect tcp/<relay-host>:7447
 
-模式：
-  --connect（默认 tcp/localhost:7447，client 模式）——对准某个 zenoh
-    监听端（relay 或任何 peer）。WSL 里对 relay 诊断即此形态；
-  --listen tcp/0.0.0.0:7447（peer 模式）——自起监听等桥连过来
-    （Windows 侧直接探桥的形态，注意别与 relay 抢端口）。
+Modes:
+  --connect (default tcp/localhost:7447, client mode) — point at a zenoh
+    listener (the relay or any peer); diagnosing the relay locally uses
+    this form;
+  --listen tcp/0.0.0.0:7447 (peer mode) — listen and wait for the bridge
+    to connect (probing the bridge directly from the Windows side; don't
+    collide with the relay's port).
 
-输出：逐 key 计数/速率/到达间隔 min/中位/max（大 max 间隔 = 突发
-或饥饿信号）。配额对照请人工按 streamer.ini 各 [CAMERA_*] HZ 判读。
+Output: per-key count / rate / inter-arrival min/median/max (a large max
+gap = burst or starvation). Compare rates manually against the per-camera
+HZ quotas in streamer.ini.
 """
 
 import argparse
@@ -28,21 +30,21 @@ import time
 try:
     import zenoh
 except ImportError:
-    raise SystemExit("需要 eclipse-zenoh：pip install eclipse-zenoh")
+    raise SystemExit("eclipse-zenoh required: pip install eclipse-zenoh")
 
 
 def main():
     ap = argparse.ArgumentParser(
         description="zenoh per-key rate probe (delivery vs consumer diagnosis)")
     ap.add_argument("keys", nargs="*", default=["ac/camera/**"],
-                    help="zenoh key expr 列表（默认 ac/camera/**）")
+                    help="zenoh key expressions (default ac/camera/**)")
     ap.add_argument("--seconds", type=float, default=10.0,
-                    help="采样窗长秒（默认 10）")
+                    help="sampling window in seconds (default 10)")
     ap.add_argument("--connect", default="tcp/localhost:7447",
-                    help="client 模式连接端（默认 tcp/localhost:7447）")
+                    help="client-mode endpoint (default tcp/localhost:7447)")
     ap.add_argument("--listen", default=None,
-                    help="peer 模式自监听端（如 tcp/0.0.0.0:7447）；"
-                         "给出即覆盖 --connect")
+                    help="peer-mode listen endpoint (e.g. tcp/0.0.0.0:7447);"
+                         "overrides --connect when given")
     args = ap.parse_args()
 
     cfg = zenoh.Config()
@@ -80,9 +82,10 @@ def main():
     session.close()
 
     if not counts:
-        print("（零消息——检查对端/键表达式/桥是否在发）")
+        print("(no messages - check the peer / key expressions / whether "
+              "the bridge is publishing)")
         return
-    print(f"\n| key | 计数 | 速率/s | 间隔min/中位/max ms |")
+    print("\n| key | count | rate/s | gap min/median/max ms |")
     print("|---|---|---|---|")
     for k in sorted(counts):
         g = gaps.get(k, [])
@@ -92,7 +95,7 @@ def main():
         else:
             gstat = "-"
         print(f"| {k} | {counts[k]} | {counts[k]/span:.1f} | {gstat} |")
-    print(f"\n窗长 {span:.1f}s，总计 {sum(counts.values())} 条，"
+    print(f"\nwindow {span:.1f}s, total {sum(counts.values())} messages, "
           f"{sum(counts.values())/span:.1f}/s")
 
 

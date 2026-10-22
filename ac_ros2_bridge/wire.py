@@ -1,6 +1,6 @@
 """Wire-format decode for ac_sim_bridge payloads.
 
-Matches shared/zenoh_payload.h: all structs are #pragma pack(1), little-endian.
+All structs are #pragma pack(1), little-endian.
 Python struct with '<' (standard size, no alignment) reproduces the same layout,
 so these format strings are the exact counterpart of the C structs.
 
@@ -52,20 +52,22 @@ ENCODING_TO_ROS = {
     3: "mono8",    # ENC_MONO8
 }
 
-# M2 压缩 wire（2026-10-12 起游戏内编码，shared/zenoh_payload_format.md 契约）：
-# mode=MODE_COMPRESSED 时 data 不再是裸像素——
-#   ENC_JPEG(5)    image_raw    : 整段 JPEG 码流（nvJPEG q90、4:2:0、RGB）
-#   ENC_DEPTH16(6) image_depth  : LZ4 块，解压后 = 米制 u16 行主序 LE（w*h*2 B）
-#   ENC_MONO8(3)   image_classes: LZ4 块，解压后 = u8 类别 ID 行主序（w*h B）
-# 类别 ID -> 类名/颜色 = ac/semantic/classes JSON 数组序（首项必须 UNKNOWN=0）。
+# Compressed wire (encoded in-game):
+# with mode=MODE_COMPRESSED, data is no longer raw pixels —
+#   ENC_JPEG(5)    image_raw    : a full JPEG stream (q90, 4:2:0, RGB)
+#   ENC_DEPTH16(6) image_depth  : LZ4 block; decompressed = metric u16,
+#                                row-major LE (w*h*2 bytes)
+#   ENC_MONO8(3)   image_classes: LZ4 block; decompressed = u8 class ids,
+#                                row-major (w*h bytes)
+# class id -> name/color = ac/semantic/classes JSON array order (first
+# entry must be UNKNOWN=0).
 MODE_RAW = 0
 MODE_COMPRESSED = 1
 ENC_JPEG = 5
 ENC_DEPTH16 = 6
-# 深度 dscale 契约：米 = u16 / 32.7675（满量程 2000m，量化 3.05cm）；
-# >2000m/天空/异常钳为 65535（解码后自然 = 2000.0 m）。
-# （M17 用户改判 2026-10-18；旧契约 327.675/200m 系 2026-10-10 裁定——
-#  旧数据靠 index 元数据 dscale 甄别，见 roadmap/m17-camera-far-depth-range.md。）
+# Depth dscale contract: meters = u16 / 32.7675 (2000 m full scale,
+# 3.05 cm quantization); >2000 m / sky / anomalies clamp to 65535
+# (which decodes to exactly 2000.0 m).
 DEPTH16_DSCALE = 32.7675
 
 # CameraInfoPayload: char name[32], uint32 width, height, float fovDeg,
@@ -77,10 +79,10 @@ CAMINFO_SIZE = struct.calcsize(CAMINFO_FMT)  # 52
 def decompress_lz4(data: bytes, expect_bytes: int) -> bytes:
     """Decompress an LZ4 block whose uncompressed size is exactly expect_bytes.
 
-    Mirrors the producer (vendored shared/3rdparty/lz4.c LZ4_compress_default —
+    Mirrors the producer (LZ4_compress_default —
     raw block, no frame header) and the reference consumer
     ac_sim_bridge/tools/wire_depth_check.py. Fail-loud on any size mismatch
-    (the M4 花屏预防条款的 Linux 对偶). Needs python-lz4 (pip install lz4).
+    (the same anti-corruption check as the producer). Needs python-lz4 (pip install lz4).
     """
     import lz4.block  # lazy: non-image domains run without it
     raw = lz4.block.decompress(data, uncompressed_size=expect_bytes)
@@ -109,7 +111,7 @@ def decode_camera_info(data: bytes) -> dict:
 CONTROL_FMT = "<5fiII"
 CONTROL_SIZE = struct.calcsize(CONTROL_FMT)  # 32
 
-# button bits (ac_ctrl::BTN_* in shared/control_shm.h) - VehicleControl bools pack into these
+# button bits - VehicleControl bools pack into these
 BTN_GEAR_UP = 0x01
 BTN_GEAR_DN = 0x02
 BTN_DRS = 0x04
@@ -136,7 +138,7 @@ GAME_STATE_SIZE = struct.calcsize(GAME_STATE_FMT)  # 16
 VSTATE_FMT = "<QifI"
 VSTATE_SIZE = struct.calcsize(VSTATE_FMT)  # 20
 
-# feedback flag bits (ac_ctrl::FLAG_FEEDBACK_* in shared/control_shm.h)
+# feedback flag bits
 FLAG_FEEDBACK_GO = 0x01          # race start signal (lights out after countdown)
 FLAG_FEEDBACK_LIGHTS_ON = 0x02   # start lights currently on (countdown running)
 
@@ -226,8 +228,7 @@ def decode_expert_ctrl(data: bytes) -> dict:
     }
 
 
-# ---- Telemetry (v1 2026-09-13): AC official acpmf shared memory passthrough ----
-# Layout mirrors shared/acpmf_shm.h (authoritative: ACTI sim_info_acti.py snapshot).
+# ---- Telemetry: AC official shared-memory physics passthrough ----
 # Physics is 145 contiguous 4-byte values (580B, no padding); graphics carries
 # UTF-16 strings with one 2-byte pad after tyreCompound; '<' struct prefix = no
 # auto-padding, so the pad bytes are explicit below.
@@ -297,6 +298,11 @@ TIMING_SIZE = TIMING_HDR_SIZE + GFX_SIZE   # 316
 TELEM_STATIC_FMT = ("<II" "i" "ff" "i" "f" "4f4f" "f" "I" "ffff" "III" "III"
                     "fff" "II" "ii" + "32s33s33s33s33s")
 TELEM_STATIC_SIZE = struct.calcsize(TELEM_STATIC_FMT)      # 300
+
+# ---- RunState: run boundary/flag events, key 'ac/run_state' ----
+RUN_STATE_FMT = "<Q7I32s32s"                # ts + 7x u32 + track[32] + carModel[32]
+RUN_STATE_SIZE = struct.calcsize(RUN_STATE_FMT)            # 100
+RUN_STATE_EVENT_NAMES = {0: "run_begin", 1: "run_end", 2: "flag", 3: "barrier"}
 
 
 def _unpack_table(fmt: str, fields, blob: bytes):
@@ -392,6 +398,64 @@ def decode_telemetry_static(data: bytes) -> dict:
                     rest[19:24]):
         out[n] = b.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
     return out
+
+
+def decode_run_state(data: bytes) -> dict:
+    """Decode a RunStatePayload (100B) from zenoh key 'ac/run_state'.
+
+    Event-driven (a handful per session): run begin/end, flag flips, restart
+    safety-fuse barrier. The same event lands in the session dump's
+    run_state.jsonl on the Windows side. event/reason/flagField enums are
+    defined alongside the payload constants on the bridge side.
+    """
+    if len(data) < RUN_STATE_SIZE:
+        raise ValueError(f"run_state payload too short: {len(data)} < {RUN_STATE_SIZE}")
+    (ts_ns, event_type, reason_code, run_id, session_epoch, session_type,
+     flags, flag_field, track, car_model) = struct.unpack(
+        RUN_STATE_FMT, data[:RUN_STATE_SIZE])
+    return {
+        "timestamp_ns": ts_ns, "event_type": event_type,
+        "reason_code": reason_code, "run_id": run_id,
+        "session_epoch": session_epoch, "session_type": session_type,
+        "flags": flags, "flag_field": flag_field,
+        "track": track.split(b"\x00", 1)[0].decode("utf-8", errors="replace"),
+        "car_model": car_model.split(b"\x00", 1)[0].decode("utf-8",
+                                                           errors="replace"),
+    }
+
+
+# ---- snake_case (msg field) -> camelCase (wire dict key) resolution ----
+# The game's native names carry all-caps suffixes / irregular capitals a
+# naive conversion misses — explicit overrides table plus the inc_ prefix
+# special case (wire key = "inc_" + camelCase, e.g. inc_tyreLoadedRadius).
+
+_WIRE_KEY_OVERRIDES = {
+    "camber_rad": "camberRAD",
+    "final_ff": "finalFF",
+    "kers_current_kj": "kersCurrentKJ",
+    "is_ai_controlled": "isAIControlled",
+    "inc_aero_cd": "inc_aeroCD",
+    "inc_aero_cl_front": "inc_aeroCLFront",
+    "inc_aero_cl_rear": "inc_aeroCLRear",
+    "has_drs": "hasDRS",
+    "has_ers": "hasERS",
+    "has_kers": "hasKERS",
+    "track_spline_length": "trackSPlineLength",
+}
+
+
+def _snake_to_camel(name: str) -> str:
+    head, *rest = name.split("_")
+    return head + "".join(r[:1].upper() + r[1:] for r in rest)
+
+
+def wire_key_for(field: str) -> str:
+    """Map a message's snake_case field name to a decode_* dict key."""
+    if field in _WIRE_KEY_OVERRIDES:
+        return _WIRE_KEY_OVERRIDES[field]
+    if field.startswith("inc_"):
+        return "inc_" + _snake_to_camel(field[4:])
+    return _snake_to_camel(field)
 
 
 def decode_ego(data: bytes) -> dict:

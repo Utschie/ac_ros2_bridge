@@ -1,8 +1,8 @@
 """ac_ros2_bridge relay node (entry point / wiring only).
 
 Subscribes Zenoh keys from the Windows ac_sim_bridge, decodes the compact
-binary payloads (wire.py, matches shared/zenoh_payload.h), and republishes as
-standard ROS2 messages. Module layout (M5):
+binary payloads (wire.py), and republishes as
+standard ROS2 messages. Module layout:
 
   relay.py         THIS FILE - node bootstrap, zenoh session, domain wiring
   relay_context.py RelayContext - cross-cutting policies: local-clock
@@ -31,6 +31,11 @@ Topics:
                        or vJoy per its bridge_control.ini, ROS side unaware)
   ac/vehicle_state  -> '/ac/vehicle_state' (ac_msgs/VehicleState:
                        gear / speed / GO race-start flag)
+  ac/telemetry      -> '/ac/telemetry' (ac_msgs/Telemetry, every scene frame)
+  ac/timing         -> '/ac/timing' (ac_msgs/Timing, every scene frame)
+  ac/telemetry_static -> '/ac/telemetry_static' (ac_msgs/TelemetryStatic,
+                       latched; session epoch changes)
+  ac/run_state      -> '/ac/run_state' (ac_msgs/RunState; run boundary events)
 
 TF tree: ac_world -> base_link -> {front,rear,...}_frame. Points/images stay in
 their sensor frames; RViz2 and downstream consumers resolve via the TF chain.
@@ -64,6 +69,7 @@ from .scene_relay import SceneRelay
 from .image_relay import CameraRelay
 from .control_relay import ControlRelay
 from .class_table import SemanticClassRelay
+from .telemetry_relay import TelemetryRelay
 
 
 class AcRelay(Node):
@@ -86,16 +92,20 @@ class AcRelay(Node):
         self._scene = SceneRelay(self._ctx)
         self._image = CameraRelay(self._ctx)
         self._control = ControlRelay(self._ctx)
+        self._telemetry = TelemetryRelay(self._ctx)
         self._semcls.attach(self._session)
         self._scene.attach(self._session)
         self._image.attach(self._session)
         self._control.attach(self._session)
+        self._telemetry.attach(self._session)
 
         self.get_logger().info("ac_relay ready: subscribing ac/ego_pose + ac/detections_3d "
                                "+ ac/lidar/*/points + ac/camera/** + ac/vehicle_state "
-                               "+ ac/expert_ctrl + ac/semantic/classes; forwarding "
+                               "+ ac/expert_ctrl + ac/semantic/classes "
+                               "+ ac/telemetry + ac/timing + ac/telemetry_static "
+                               "+ ac/run_state; forwarding "
                                "/ac/vehicle_cmd -> zenoh "
-                               "(M20: payloads arrive user-facing; frames.py assembles)")
+                               "(payloads arrive user-facing; frames.py assembles)")
 
     def close(self) -> None:
         self._ctx.close()

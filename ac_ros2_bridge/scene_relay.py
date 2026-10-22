@@ -1,6 +1,6 @@
 """SceneRelay - ego pose / 3D detections / lidar domain module.
 
-Moved verbatim from relay.py (M5 modularization; behavior unchanged):
+Moved verbatim from relay.py (modularization; behavior unchanged):
   ac/ego_pose       -> geometry_msgs/PoseStamped '/ac/ego_pose'
                        + dynamic TF ac_world -> base_link (and feeds the
                        context's pairing/clamp references)
@@ -69,7 +69,7 @@ class SceneRelay:
             return
         w = e["world"]
         self.ctx.last_ego_world = list(w)   # cached for base_link->sensor TF composition
-        # Debug: payload matrix triples (M20: rows already fwd/left/up), throttled.
+        # Debug: payload matrix triples (rows already fwd/left/up), throttled.
         now_t = time.monotonic()
         if now_t - self._last_mtx_log > 2.0:
             self._last_mtx_log = now_t
@@ -141,7 +141,7 @@ class SceneRelay:
         for i, det in enumerate(d["detections"]):
             (px, py, pz), (qx, qy, qz, qw) = frames.pos_rot_to_ros(
                 det["world_pos"], det["world_rot"])
-            # M20: payload half_extents order = (fwd, left, up) -> ROS size
+            # payload half_extents order = (fwd, left, up) -> ROS size
             # x=length, y=width, z=height (direct mapping, no reorder)
             he = det["half_extents"]
             sx, sy, sz = 2.0 * he[0], 2.0 * he[1], 2.0 * he[2]
@@ -159,7 +159,7 @@ class SceneRelay:
             d3.bbox.size.z = sz
             # vision_msgs ObjectHypothesisWithPose differs by ROS2 distro:
             #   Humble -> flat {id, score};  Jazzy/Iron+ -> nested {hypothesis.{class_id,score}}
-            # M3: the id field carries the CLASS NAME from ctx.semantic_classes
+            # the id field carries the CLASS NAME from ctx.semantic_classes
             # (zenoh ac/semantic/classes; custom classes included) - it was a
             # bare numeric string before, unexplainable to consumers.
             hyp = ObjectHypothesisWithPose()
@@ -189,7 +189,7 @@ class SceneRelay:
             mk.scale.x = sx
             mk.scale.y = sy
             mk.scale.z = sz
-            # M3: marker color = the class color (same table the semantic
+            # marker color = the class color (same table the semantic
             # image bakes into its pixels). UNKNOWN's class color is white -
             # invisible on RViz2's light background - so it keeps the legacy
             # green instead.

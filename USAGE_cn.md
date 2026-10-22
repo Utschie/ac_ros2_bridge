@@ -21,7 +21,7 @@
 | 相机 | `/ac/camera/<相机>/image_raw/compressed`、`image_depth`、`image_classes`、`camera_info` |
 | 类别表 | `/ac/semantic/classes` |
 | 控制（订阅） | `/ac/vehicle_cmd`、`/ac/game_cmd`（ac_msgs） |
-| 反馈（发布） | `/ac/vehicle_state`、`/ac/game_state`、`/ac/expert_ctrl`、`/ac/telemetry`、`/ac/timing`、`/ac/run_state` |
+| 反馈（发布） | `/ac/vehicle_state`、`/ac/game_state`、`/ac/expert_ctrl`、`/ac/telemetry`（每场景帧）、`/ac/timing`（每场景帧）、`/ac/telemetry_static`（latched，会话变化时）、`/ac/run_state`（事件驱动） |
 
 ---
 
@@ -37,11 +37,12 @@ pip3 install eclipse-zenoh lz4
 sudo apt install -y ros-humble-vision-msgs ros-humble-image-transport-plugins
 ```
 
-获取套件提供的 ROS 中继源码（`ac_msgs` 与 `ac_ros2_bridge` 两个目录，
-放进工作区后构建）：
+获取套件提供的 ROS 中继源码（开源仓库，直接 clone 到工作区）：
 
 ```bash
-mkdir -p ~/colcon_ws/src && cd ~/colcon_ws/src    # 两个源码目录放在这里
+mkdir -p ~/colcon_ws/src && cd ~/colcon_ws/src
+git clone https://github.com/Utschie/ac_msgs.git
+git clone https://github.com/Utschie/ac_ros2_bridge.git
 source /opt/ros/humble/setup.bash
 cd ~/colcon_ws && colcon build --symlink-install
 source install/setup.bash

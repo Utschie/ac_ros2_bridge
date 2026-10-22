@@ -1,4 +1,4 @@
-"""SemanticClassRelay - M3 semantic class vocabulary domain module.
+"""SemanticClassRelay - semantic class vocabulary domain module.
 
 zenoh ac/semantic/classes (UTF-8 JSON text, semcls::tableToJson on the
 Windows side - NOT a binary payload like every other key) ->
@@ -10,14 +10,14 @@ Windows side - NOT a binary payload like every other key) ->
                             raw JSON; TRANSIENT_LOCAL depth 1 - late-joining
                             consumers get the newest table immediately).
 
-Why: since M3 the class table is user-editable (configs/classes.json -
+Why: the class table is user-editable (configs/classes.json -
 custom classes, array order = class id) and detections carry the REAL
 semanticClass ids. Without a vocabulary on this side, /ac/detections_3d
 could only publish bare numeric ids and the RGBA8 semantic image's colors
 were unexplainable - custom classes were invisible to ROS consumers.
 
-Fallback rules mirror the Windows five consumers (shared/
-semantic_class_config.h): before the first valid zenoh sample the built-in
+Fallback rules mirror the Windows-side consumers: before the first valid
+zenoh sample the built-in
 11-class table bootstraps; any rejected sample (bad JSON, first entry not
 UNKNOWN, duplicate names, > 64 classes) keeps the LAST GOOD table serving
 with a WARN - no flicker, same graceful-degradation philosophy.

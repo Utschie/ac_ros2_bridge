@@ -1,6 +1,6 @@
 """CameraRelay - camera image domain module.
 
-ac/camera/<cam>/<suffix> handling. M2 compressed-wire adaptation (2026-10-14):
+ac/camera/<cam>/<suffix> handling. Compressed wire:
   image_raw     enc=5  JPEG    -> /ac/camera/<cam>/image_raw/compressed
                                   (sensor_msgs/CompressedImage, format="jpeg";
                                   zero-decode passthrough — consume with
@@ -8,8 +8,8 @@ ac/camera/<cam>/<suffix> handling. M2 compressed-wire adaptation (2026-10-14):
                                   compressed transport)
   image_depth   enc=6  LZ4 u16 -> /ac/camera/<cam>/image_depth
                                   (sensor_msgs/Image 32FC1 meters,
-                                   u16 / 32.7675, 2000 m full scale - M17
-                                   contract since 2026-10-18; 65535 decodes
+                                   u16 / 32.7675, 2000 m full scale
+                                   contract; 65535 decodes
                                    to 2000.0 m = sky / full range)
   image_classes enc=3  LZ4 u8  -> /ac/camera/<cam>/image_classes
                                   (sensor_msgs/Image mono8, pixel = class id;
@@ -109,7 +109,7 @@ class CameraRelay:
                             img["data_len"] // img["height"],
                             np.frombuffer(img["data"], dtype=np.uint8))
 
-    # ---- M2 compressed path ----
+    # ---- compressed path ----
 
     def _relay_compressed(self, cam, suffix, key, img) -> None:
         w, h, enc = img["width"], img["height"], img["encoding"]
@@ -141,8 +141,9 @@ class CameraRelay:
                     return
                 raw = wire.decompress_lz4(img["data"], w * h * 2)
                 # u16 -> meters (dscale contract; 65535 -> exactly 200.0 m = sky).
-                # 纯 float32 原地乘（不走 float64 中转）：zenoh 回调单线程，
-                # 满配额时这里的内存带宽是 relay 吞吐瓶颈（2026-10-14 实测）。
+                # In-place float32 multiply (no float64 detour): the zenoh
+                # callback is single-threaded and this memory bandwidth is
+                # the relay throughput bottleneck at full quota.
                 meters = np.frombuffer(raw, dtype="<u2").astype(np.float32)
                 meters *= np.float32(1.0 / wire.DEPTH16_DSCALE)
                 self._publish_image(f"/{key}", cam, img, "32FC1", w * 4, meters)

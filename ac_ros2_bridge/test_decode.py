@@ -1,6 +1,7 @@
 """Standalone format check for wire.py — run on any OS with Python (no ROS2 needed).
 
-Verifies the Python struct format strings match shared/zenoh_payload.h (pack(1), LE):
+Verifies the Python struct format strings match the bridge's C payload
+definitions (pack(1), LE):
   EgoPosePayload      == 80 bytes
   Detection3DPayload  == 12-byte header + 74 bytes/Detection3D
   LidarPayload        == 124 bytes + 24 bytes/hit
@@ -16,7 +17,7 @@ import wire  # noqa: E402
 
 
 def main() -> None:
-    # sizes must match the C static_asserts in shared/zenoh_payload.h
+    # sizes must match the C static_asserts on the bridge side
     assert wire.EGO_SIZE == 80, f"EGO_SIZE {wire.EGO_SIZE} != 80"
     assert wire.DET_HDR_SIZE == 12, f"DET_HDR_SIZE {wire.DET_HDR_SIZE} != 12"
     assert wire.DET_SIZE == 74, f"DET_SIZE {wire.DET_SIZE} != 74"
@@ -53,7 +54,7 @@ def main() -> None:
     assert det0["class_id"] == 1
     assert det0["body_node_ptr"] == 0xAABBCCDD
 
-    # lidar: header sizes must match shared/zenoh_payload.h + shared/lidar_shm.h
+    # lidar: header sizes must match the C definitions on the bridge side
     assert wire.LIDAR_SIZE == 124, f"LIDAR_SIZE {wire.LIDAR_SIZE} != 124"
     assert wire.LIDAR_HIT_SIZE == 24, f"LIDAR_HIT_SIZE {wire.LIDAR_HIT_SIZE} != 24"
 
@@ -76,7 +77,7 @@ def main() -> None:
     hx, hy, hz = struct.unpack_from("<3f", l["hits"], 4)
     assert abs(hx - 1.0) < 1e-6 and abs(hy - 2.0) < 1e-6 and abs(hz - 3.0) < 1e-6
 
-    # image: header size must match shared/zenoh_payload.h (ImagePayload 32B)
+    # image: header size must match the C definitions (ImagePayload 32B)
     assert wire.IMAGE_SIZE == 32, f"IMAGE_SIZE {wire.IMAGE_SIZE} != 32"
 
     # image round-trip: 4x2 rgba8 pixels (32 bytes) + trailing extra byte is NOT
@@ -111,7 +112,7 @@ def main() -> None:
     assert wire.ENCODING_TO_ROS[2] == "32FC1"
     assert wire.ENCODING_TO_ROS[3] == "mono8"
 
-    # M2 compressed wire (2026-10-14 adaptation): enums + lz4 round-trips
+    # compressed wire: enums + lz4 round-trips
     assert wire.MODE_RAW == 0 and wire.MODE_COMPRESSED == 1
     assert wire.ENC_JPEG == 5 and wire.ENC_DEPTH16 == 6
     assert abs(wire.DEPTH16_DSCALE - 32.7675) < 1e-9
@@ -135,7 +136,7 @@ def main() -> None:
         assert list(m) == [0, 32768, 65535, 1234]
         meters = (m.astype(np.float64) / wire.DEPTH16_DSCALE).astype(np.float32)
         assert abs(meters[0]) < 1e-6                    # 0 m
-        assert abs(meters[1] - 1000.0153) < 1e-2       # 32768 -> ~1000 m (M17 scale)
+        assert abs(meters[1] - 1000.0153) < 1e-2       # 32768 -> ~1000 m
         assert abs(meters[2] - 2000.0) < 1e-2          # 65535 -> exactly 2000 m (sky)
         # semantic frame: 4 class-id bytes
         sblob = lz4.block.compress(bytes([0, 1, 2, 63]), store_size=False)
@@ -170,11 +171,11 @@ def main() -> None:
     except ValueError:
         pass
 
-    # control: sizes must match shared/zenoh_payload.h (ControlPayload 32B)
+    # control: sizes must match the C definitions (ControlPayload 32B)
     assert wire.CONTROL_SIZE == 32, f"CONTROL_SIZE {wire.CONTROL_SIZE} != 32"
     assert wire.VSTATE_SIZE == 20, f"VSTATE_SIZE {wire.VSTATE_SIZE} != 20"
 
-    # expert_ctrl (v5 imitation learning): size + decode round-trip
+    # expert_ctrl: size + decode round-trip
     assert wire.EXPERT_CTRL_SIZE == 44, f"EXPERT_CTRL_SIZE {wire.EXPERT_CTRL_SIZE} != 44"
     import struct as _s2
     _e = _s2.pack(wire.EXPERT_CTRL_FMT, 1234567890123, 777,
@@ -236,7 +237,7 @@ def main() -> None:
           f"IMAGE_SIZE={wire.IMAGE_SIZE} CONTROL_SIZE={wire.CONTROL_SIZE} "
           f"VSTATE_SIZE={wire.VSTATE_SIZE} GAME_CMD_SIZE={wire.GAME_CMD_SIZE} "
           f"GAME_STATE_SIZE={wire.GAME_STATE_SIZE} "
-          f"(matches shared/zenoh_payload.h + shared/lidar_shm.h)")
+          "(matches the C definitions on the bridge side)")
 
 
 if __name__ == "__main__":

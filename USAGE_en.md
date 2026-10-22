@@ -24,7 +24,7 @@ Main topics and TF:
 | Cameras | `/ac/camera/<cam>/image_raw/compressed`, `image_depth`, `image_classes`, `camera_info` |
 | Class table | `/ac/semantic/classes` |
 | Control (subscriptions) | `/ac/vehicle_cmd`, `/ac/game_cmd` (ac_msgs) |
-| Feedback (publications) | `/ac/vehicle_state`, `/ac/game_state`, `/ac/expert_ctrl`, `/ac/telemetry`, `/ac/timing`, `/ac/run_state` |
+| Feedback (publications) | `/ac/vehicle_state`, `/ac/game_state`, `/ac/expert_ctrl`, `/ac/telemetry` (every scene frame), `/ac/timing` (every scene frame), `/ac/telemetry_static` (latched, on session change), `/ac/run_state` (event-driven) |
 
 ## 1. Linux side setup
 
@@ -39,11 +39,13 @@ pip3 install eclipse-zenoh lz4
 sudo apt install -y ros-humble-vision-msgs ros-humble-image-transport-plugins
 ```
 
-Get the ROS relay sources provided with the suite (`ac_msgs` and
-`ac_ros2_bridge`), then:
+Get the ROS relay sources provided with the suite (open-source repositories,
+clone both into the workspace):
 
 ```bash
-mkdir -p ~/colcon_ws/src && cd ~/colcon_ws/src    # put both source dirs here
+mkdir -p ~/colcon_ws/src && cd ~/colcon_ws/src
+git clone https://github.com/Utschie/ac_msgs.git
+git clone https://github.com/Utschie/ac_ros2_bridge.git
 source /opt/ros/humble/setup.bash
 cd ~/colcon_ws && colcon build --symlink-install
 source install/setup.bash

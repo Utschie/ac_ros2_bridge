@@ -1,4 +1,4 @@
-"""ControlRelay - vehicle control downlink + state feedback domain module (M4).
+"""ControlRelay - vehicle control downlink + state feedback domain module.
 
 The FIRST reverse-direction module (ROS -> zenoh), opposite to scene/image:
 
@@ -15,8 +15,8 @@ Threading model (differs per direction):
   _on_state runs on a zenoh callback thread; rclpy publish is NOT thread-safe
   -> always under ctx.pub_lock (relay_context policy 3).
 
-⚠ CODING RULES for future edits of this module (from the 2026-08 setter-bug
-post-mortem — see ac_ros2_bridge README "调试记录"):
+⚠ CODING RULES for future edits of this module (from a past setter-bug
+post-mortem):
   1. NEVER assign large arrays through rclpy setters (uint8[] data etc.):
      Humble's generated setters run a per-element Python assertion loop
      (≈1-3 s per MB, once masqueraded as network congestion). Direct-write
@@ -50,8 +50,9 @@ class ControlRelay:
             GameControl, "/ac/game_cmd", self._on_game_cmd, cmd_qos)
         self._pub_state = node.create_publisher(VehicleState, "/ac/vehicle_state", 10)
         self._pub_game_state = node.create_publisher(GameState, "/ac/game_state", 10)
-        # v5 模仿学习：专家操作逐帧上行（BEST_EFFORT 深度 50——每场景帧一条，
-        # 训练/录制消费方丢一两条无碍，不要求可靠传输）
+        # Expert actions per frame (BEST_EFFORT depth 50 — one per scene
+        # frame; training/recording consumers can lose one or two, no
+        # reliability required)
         self._pub_expert = node.create_publisher(ExpertCtrl, "/ac/expert_ctrl", 50)
 
         self._session = None
@@ -151,7 +152,8 @@ class ControlRelay:
             self._pub_game_state.publish(m)
 
     def _on_expert(self, sample) -> None:
-        # v5 模仿学习：每场景帧的专家操作（与 /ac/ego_pose 同 frame_id 配对）
+        # Expert actions for this scene frame (frame_id pairs with
+        # /ac/ego_pose)
         try:
             e = wire.decode_expert_ctrl(wire.payload_bytes(sample))
         except Exception as ex:  # noqa: BLE001

@@ -66,7 +66,7 @@ class RelayContext:
 
         # Cross-domain caches.
         self.last_ego_world = None   # 16-float AC BODYTR world matrix
-        # M3: semantic class vocabulary (id -> name/color/dynamic/exclude),
+        # semantic class vocabulary (id -> name/color/dynamic/exclude),
         # fed by SemanticClassRelay from zenoh ac/semantic/classes and swapped
         # whole-object on update (readers never see a torn table). Bootstrap =
         # built-in 11 classes until the first valid sample arrives.

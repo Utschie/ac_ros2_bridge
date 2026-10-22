@@ -16,8 +16,8 @@
   <depend>sensor_msgs</depend>
   <depend>ac_msgs</depend>
   <exec_depend>python3-numpy</exec_depend>
-  <!-- python-lz4 (depth/semantic LZ4 帧解压) 为 pip 包：pip install lz4（无
-       rosdep 键，见 README 依赖节）。 -->
+  <!-- python-lz4 (depth/semantic LZ4 frame decompression) is a pip
+       package: pip install lz4 (no rosdep key; see README). -->
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

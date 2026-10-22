@@ -2,7 +2,7 @@
 needed; mirrors test_decode.py's trick of importing the module directly).
 
 Exercises the pure half of class_table.py against the rules of
-shared/semantic_class_config.h (semcls::parseClassesText):
+the Windows-side class-table parser:
   - canonical JSON (what semcls::tableToJson emits on the Windows side)
     parses into the right ids/names/colors/flags
   - both color forms ("#RRGGBB" and [r,g,b]) parse

@@ -1,6 +1,6 @@
-"""Sanity checks for frames.py (M20 conventions) - any OS, no ROS needed.
+"""Sanity checks for frames.py - any OS, no ROS needed.
 
-Ground truth (M20 v2, 2026-10-20; see roadmap/m20-unified-ros-frames.md):
+Ground truth (see frames.py docstring):
 payloads arrive with body axes already user-facing (bridge converts at the
 source):
   - EgoPosePayload.world rows = fwd / left / up; position = AC-scene world
@@ -65,7 +65,7 @@ assert abs(q2[2] - math.sin(math.pi / 4)) < 1e-6 \
     and abs(q2[3] - math.cos(math.pi / 4)) < 1e-6, q2
 print("ego pose assembly: OK (identity + pass-through pos + 90deg yaw)")
 
-# Case 4: install_pose_to_ros against the M20 ini values (payload = ini
+# Case 4: install_pose_to_ros against the ini values (payload = ini
 # values verbatim; front is the acceptance-H anchor).
 #   front  FWD=(1,0,0)  @ (0.4, 0, 1.1)    -> identity quat  [ACCEPTANCE H]
 #   rear   FWD=(-1,0,0) @ (-2.0, 0, 1.1)   -> 180-deg Z
@@ -91,5 +91,5 @@ for nm, pos_i, fwd_i, want_pos, want_quat in cases:
         f"{nm}: quat {tuple(round(v, 6) for v in got_quat)} want {want_quat}"
     print(f"install {nm}: OK  pos={tuple(round(v, 3) for v in got_pos)}")
 
-print("frames sanity OK (M20: compose identity+yaw, ego pass-through, "
+print("frames sanity OK (compose identity+yaw, ego pass-through, "
       "install anchors incl. front=identity)")
