@@ -87,6 +87,15 @@ Ethernet link. Steps:
    sudo ip addr add 192.168.50.2/24 dev <nic> && sudo ip link set <nic> up
    ```
 
+   Note: this is a **runtime setting and is lost when Linux reboots** — re-run
+   it after every reboot of the Linux machine (`ip -br addr` showing no
+   192.168.50.2 on the wired NIC means it is gone). If both machines are on
+   the same WiFi LAN you can re-apply it remotely from Windows:
+
+   ```bash
+   ssh <user>@<linux-wifi-ip> "sudo ip addr add 192.168.50.2/24 dev <nic> && sudo ip link set <nic> up"
+   ```
+
 2. **Set a static IP on the Windows side** (admin PowerShell; find
    `<ifIndex>` via `Get-NetAdapter`):
 
@@ -99,7 +108,9 @@ Ethernet link. Steps:
 
 3. **Verify connectivity**: `ping 192.168.50.2` from Windows (the reverse
    ping failing is just the Windows firewall blocking ICMP — harmless, the
-   bridge connects outbound).
+   bridge connects outbound). The first few packets may drop right after
+   setting the address (USB NIC wake-up / ARP convergence) — ping a longer
+   burst before concluding.
 
 4. **Point the bridge at it and restart**: set bridge.json5 to
    `tcp/192.168.50.2:7447` and restart the bridge from the launcher.
@@ -113,11 +124,23 @@ and won't list it — republish to decode first:
 
 ```bash
 source /opt/ros/humble/setup.bash && source ~/colcon_ws/install/setup.bash
-ros2 run image_transport republish compressed raw --ros-args   -r /in/compressed:=/ac/camera/front/image_raw/compressed   -r /out:=/ac/camera/front/image_raw -r __node:=republish_front
+
+# Option 1 (recommended): the bundled script — all or selected cameras,
+# one Ctrl+C stops everything:
+./tools/republish_color.sh                    # all five cameras (default)
+./tools/republish_color.sh front sideLeft     # only the named cameras
+
+# Option 2: a single instance by hand (full-name remapping required;
+# the `in:=` short syntax does not work):
+ros2 run image_transport republish compressed raw --ros-args \
+  -r /in/compressed:=/ac/camera/front/image_raw/compressed \
+  -r /out:=/ac/camera/front/image_raw -r __node:=republish_front
 ```
 
-Then select `/ac/camera/front/image_raw` in RViz2. Stop with Ctrl+C; start
-one instance per camera you want to view (adjust the topic and node names).
+Then select `/ac/camera/<cam>/image_raw` in RViz2. One process per
+camera; with all of them running, mind the JPEG decode CPU cost (about
+50 color frames/s in total — on a weak relay machine, start only the
+cameras you actually view).
 
 Camera intrinsics: `/ac/camera/<cam>/camera_info` (sensor_msgs/CameraInfo).
 
@@ -144,3 +167,4 @@ and the images are continuous with no multi-second stalls.
 | camera_info never arrives | Wait a few seconds (resent periodically); if still missing, restart the bridge |
 | Linux build fails "existing path cannot be removed" | Wipe build/install/log and rebuild (see "Linux side setup") |
 | Windows wired Internet dead after plugging back into the router | Leftover direct-link static IP → restore DHCP (see "Direct Ethernet link") |
+| `ping 192.168.50.2` fails while Windows still has 192.168.50.1 | Linux-side static IP lost after reboot (runtime setting) → check `ip -br addr`, re-run the step-1 command from "Direct Ethernet link" (remote SSH works if both are on the same WiFi LAN); replugging the USB NIC can change its name, re-check with `ip addr` |

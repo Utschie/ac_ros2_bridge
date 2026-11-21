@@ -80,6 +80,14 @@ WiFi 只够低速联调；全量流推荐网线直连。步骤：
    sudo ip addr add 192.168.50.2/24 dev <网卡名> && sudo ip link set <网卡名> up
    ```
 
+   注意：这是**运行时配置，Linux 重启后失效**——每次 Linux 机器重启后
+   都要重跑这一条（`ip -br addr` 查有线口没有 192.168.50.2 即是丢了）。
+   若两台机器还在同一 WiFi 局域网内，也可以从 Windows 直接远程补：
+
+   ```bash
+   ssh <用户名>@<Linux 机器 WiFi IP> "sudo ip addr add 192.168.50.2/24 dev <网卡名> && sudo ip link set <网卡名> up"
+   ```
+
 2. **Windows 端设静态 IP**（管理员 PowerShell；`<ifIndex>` 用
    `Get-NetAdapter` 查）：
 
@@ -91,7 +99,8 @@ WiFi 只够低速联调；全量流推荐网线直连。步骤：
    WiFi 不受影响。
 
 3. **验证连通**：Windows 上 `ping 192.168.50.2`（反向 ping 不通是
-   Windows 防火墙拦 ICMP，无碍——桥是向外连接的）。
+   Windows 防火墙拦 ICMP，无碍——桥是向外连接的）。刚设完地址的前几发
+   可能丢（USB 网卡唤醒/ARP 收敛），多 ping 几发再下结论。
 
 4. **改地址并重启**：把 bridge.json5 指向 `tcp/192.168.50.2:7447`，
    从启动器重启 bridge。
@@ -107,14 +116,21 @@ WiFi 只够低速联调；全量流推荐网线直连。步骤：
 | **彩色** | `/ac/camera/<cam>/image_raw/compressed` | **CompressedImage**（JPEG 透传） | **RViz2 的 Image 显示不认此类型**（话题选择器按类型过滤，`ros2 topic list` 能见但选不到）——需先 republish 解码： |
 
 ```bash
-# 彩色图解码转发（注意：必须用全名重映射，不能用 in:= 简写）：
 source /opt/ros/humble/setup.bash && source ~/colcon_ws/install/setup.bash
+
+# 方式一（推荐）：仓库自带脚本，全部或指定相机一键转发，Ctrl+C 全停：
+./tools/republish_color.sh                    # 五路全开（默认）
+./tools/republish_color.sh front sideLeft     # 只开指定相机
+
+# 方式二：手动单路（必须用全名重映射，不能用 in:= 简写）：
 ros2 run image_transport republish compressed raw --ros-args \
   -r /in/compressed:=/ac/camera/front/image_raw/compressed \
   -r /out:=/ac/camera/front/image_raw -r __node:=republish_front
 ```
 
-之后 RViz2 里选 `/ac/camera/front/image_raw`（sensor_msgs/Image）即可。停止用 Ctrl+C；每个要看的相机起一路（改对应话题名与节点名）。
+之后 RViz2 里选 `/ac/camera/<cam>/image_raw`（sensor_msgs/Image）即可。
+每个相机一路独立进程；全开时注意 JPEG 解码的 CPU 开销（合计约
+50 帧/秒彩色额度，中继机器弱时可只开要看的相机）。
 
 相机内参：`/ac/camera/<cam>/camera_info`（sensor_msgs/CameraInfo）。
 
@@ -146,3 +162,4 @@ python3 ~/colcon_ws/src/ac_ros2_bridge/tools/zenoh_rate_probe.py --seconds 12
 | camera_info 迟迟不来 | 稍等几秒（周期重发）；仍无则重启 bridge |
 | Linux 构建报 "existing path cannot be removed" | 清掉 build/install/log 后重建（见"Linux 端安装"一节） |
 | Windows 有线插回路由器无法上网 | 直连静态 IP 残留 → 网卡恢复 DHCP（见"网线直连"一节） |
+| ping 不通 192.168.50.2（Windows 端 192.168.50.1 正常） | Linux 端静态 IP 重启后丢失（运行时配置）→ `ip -br addr` 查有线口，无地址则重跑"网线直连"步骤 1 的命令（同 WiFi 局域网时可远程 SSH 补）；插拔过 USB 网卡则网卡名可能变，重新 `ip addr` 查 |
