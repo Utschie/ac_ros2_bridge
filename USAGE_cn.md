@@ -55,6 +55,14 @@ ZENOH_CONFIG=~/colcon_ws/src/ac_ros2_bridge/relay.json5 \
   ros2 run ac_ros2_bridge relay
 ```
 
+也可分两行，但 **`export` 不能少**（单独赋值只对当前 shell 生效，不会传给
+`ros2 run` 的子进程——正是"看似 ready 实际没监听"的常见触发方式）：
+
+```bash
+export ZENOH_CONFIG=~/colcon_ws/src/ac_ros2_bridge/relay.json5
+ros2 run ac_ros2_bridge relay
+```
+
 启动正常时应看到日志 `ac_relay ready`，且 `ss -tln | grep 7447` 显示
 LISTEN。停止用 Ctrl+C。⚠ 必须带 `ZENOH_CONFIG` 启动——不带的话中继
 看似 ready，实际没有监听 7447。每次开机后需重新启动（或配置自启）。

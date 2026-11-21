@@ -54,7 +54,18 @@ source install/setup.bash
 ## 2. Starting the relay
 
 ```bash
-ZENOH_CONFIG=~/colcon_ws/src/ac_ros2_bridge/relay.json5 \n  ros2 run ac_ros2_bridge relay
+ZENOH_CONFIG=~/colcon_ws/src/ac_ros2_bridge/relay.json5 \
+  ros2 run ac_ros2_bridge relay
+```
+
+Splitting it into two lines works too, but the **`export` is mandatory**
+(a bare assignment only affects the current shell and is not passed to the
+`ros2 run` child process — the classic way to end up "ready but never
+listening"):
+
+```bash
+export ZENOH_CONFIG=~/colcon_ws/src/ac_ros2_bridge/relay.json5
+ros2 run ac_ros2_bridge relay
 ```
 
 When started normally you should see the log line `ac_relay ready`, and
