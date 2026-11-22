@@ -82,6 +82,10 @@ LISTEN。停止用 Ctrl+C。⚠ 必须带 `ZENOH_CONFIG` 启动——不带的�
 
 WiFi 只够低速联调；全量流推荐网线直连。步骤：
 
+> 下文的 `192.168.50.1` / `192.168.50.2` 是**示例值**（Windows 端 /
+> Linux 端），与出厂 bridge.json5 默认值一致；换成任意空闲的直连网段
+> 也可以，两端同网段且 bridge.json5 指向 Linux 端地址即可。
+
 1. **Linux 端设静态 IP**（网卡名换成自己的，用 `ip addr` 查）：
 
    ```bash

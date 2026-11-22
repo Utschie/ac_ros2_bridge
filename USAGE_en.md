@@ -91,6 +91,11 @@ automatically.
 WiFi is fine for low-rate checks only; for the full stream use a direct
 Ethernet link. Steps:
 
+> The `192.168.50.1` / `192.168.50.2` values below are **examples**
+> (Windows side / Linux side) matching the factory bridge.json5 default;
+> any free point-to-point subnet works — just keep both ends in the same
+> subnet and point bridge.json5 at the Linux-side address.
+
 1. **Set a static IP on the Linux side** (substitute your NIC name, found
    via `ip addr`):
 
